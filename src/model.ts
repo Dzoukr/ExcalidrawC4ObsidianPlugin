@@ -22,6 +22,7 @@ export interface C4Relationship {
   relationship: true;
   description: string;
   technology?: string;
+  carried?: string[]; // the layers it has been carried down into, once each
 }
 
 /** What a layer below the system context shows: the containers of a system or the components of a container. */

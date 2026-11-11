@@ -118,7 +118,7 @@
   pointer-events: none;
 }
 
-/* A form's icon button, styled as its close button and placed left of it. */
-.modal .c4-modal-action {
+/* A form's icon button, styled as its close button and placed left of it, over Obsidian's own placement of it. */
+body .modal .modal-header-button.c4-modal-action {
   inset-inline-end: var(--c4-action-end, 48px);
 }

@@ -71,7 +71,9 @@ An element added outside its home layer (a person added to a container layer, a 
 
 ### Relationships between levels
 
-A relationship drawn in one layer is drawn in every other layer that shows its ends or the elements containing them, unless one is already there. So `User → Web app` drawn in the container layer of S puts `User → S` in the system context. It never goes down a level: a context relationship to S is only a neighbour in S's container layer, waiting to be connected to a container.
+A relationship drawn in one layer is drawn in every other layer that shows its ends or the elements containing them, unless one is already there. So `User → Web app` drawn in the container layer of S puts `User → S` in the system context.
+
+Going down, each relationship of S one level up is carried into S's layer once, on zooming in: as an arrow between the element at the other end and S's boundary, with the same description and technology, to be moved onto the container it is about, edited, or joined by others. The relationship above remembers the layers it was carried into (`carried`), so a carried arrow deleted below stays deleted, and one added above later comes down on the next zoom. One already shown below, from or to anything inside S, is not carried. An arrow to the boundary follows the boundary as it grows, and shows as a ghost from the levels below.
 
 ## Next
 

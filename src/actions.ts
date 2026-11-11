@@ -277,6 +277,8 @@ function fitBoundary(ltx: LayerTx, layer: DiagramId) {
     const bx = b.x >= right ? dx : 0;
     if (bx || by) moveBox(ltx, b.id, bx, by);
   }
+  // Relationships carried down to the boundary keep meeting its edge.
+  for (const b of rect.boundElements ?? []) if (b.type === "arrow") reroute(ltx, b.id);
 }
 
 /** Moves a box with its text, and straightens its relationships. */
@@ -498,6 +500,7 @@ export function zoomIn(view: ExcalidrawView): boolean {
     const scene = ltx.scene();
     const scope = scene.modelId(item.el)!;
     if (!ltx.hasLayer(scope)) createLayer(ea, ltx, scene, item.el, { ...item.data, id: scope }, kind);
+    carryDown(ea, ltx, scope);
     return { layer: scope };
   });
 }
@@ -544,11 +547,7 @@ function createLayer(ea: ExcalidrawAutomate, ltx: LayerTx, scene: Scene, scopeBo
   // above do; the others go above or below it.
   const way = makeWay(scopeBox, boundary);
   const taken: Box[] = [boundary];
-  const free = (b: Box): Vec => {
-    const p = { x: b.x, y: b.y };
-    while (taken.some((t) => overlaps({ ...b, ...p }, t, GAP / 2))) p.x += b.width + GAP;
-    return p;
-  };
+  const free = (b: Box) => freeSpot(b, taken);
   const place = (id: string, p: Vec) => taken.push(addBox(ea, ltx, { ...scene.element(id)!, id }, p, scope));
   const unplaced: { id: string; incoming: boolean }[] = [];
   for (const n of neighbours) {
@@ -578,6 +577,55 @@ function createLayer(ea: ExcalidrawAutomate, ltx: LayerTx, scene: Scene, scopeBo
     addArrow(ea, ltx, a, b, r.data, scope);
   }
   fitBoundary(ltx, scope);
+}
+
+/** Where a box goes so that it keeps clear of others: where it is, or further right. */
+function freeSpot(b: Box, taken: Box[]): Vec {
+  const p = { x: b.x, y: b.y };
+  while (taken.some((t) => overlaps({ ...b, ...p }, t, GAP / 2))) p.x += b.width + GAP;
+  return p;
+}
+
+/**
+ * Brings the relationships of the scope one level up down into its layer, each once: as arrows between the element
+ * at the other end and the scope's boundary, to be moved onto the element inside that they are about. One already
+ * shown in the layer, from or to anything inside the scope, is not repeated.
+ */
+function carryDown(ea: ExcalidrawAutomate, ltx: LayerTx, scope: string) {
+  const start = ltx.scene();
+  const up = start.parentLayer(scope);
+  const scopeBox = start.boxIn(scope, up);
+  const rect = start.boundary(scope).rect;
+  if (!scopeBox || !rect) return;
+  for (const r of start.relationships(up)) {
+    const from = start.modelId(r.from)!;
+    const to = start.modelId(r.to)!;
+    if ((from !== scope && to !== scope) || from === to) continue;
+    const carried = r.data.carried ?? [];
+    if (carried.includes(scope)) continue;
+    ltx.patch(r.arrow.id, { customData: { ...(r.arrow.customData ?? {}), [KEY]: { ...r.data, carried: [...carried, scope] } } });
+    const outgoing = from === scope;
+    const other = outgoing ? to : from;
+    const scene = ltx.scene();
+    const shown = scene.relationships(scope).some((x) => {
+      const f = scene.modelId(x.from)!;
+      const t = scene.modelId(x.to)!;
+      return outgoing ? scene.within(f, scope) && t === other : f === other && scene.within(t, scope);
+    });
+    if (shown) continue;
+    let otherBox = scene.representative(other, scope);
+    if (!otherBox || scene.within(scene.modelId(otherBox)!, scope)) {
+      // Not drawn in the layer yet: where it is one level up, making way for the boundary.
+      const there = outgoing ? r.to : r.from;
+      const d = makeWay(scopeBox, rect).move(there);
+      const taken = [rect, ...scene.boxes(scope)];
+      otherBox = addBox(ea, ltx, { ...scene.element(other)!, id: other }, freeSpot({ ...there, x: there.x + d.x, y: there.y + d.y }, taken), scope);
+    }
+    const boundary = ltx.get(rect.id)!;
+    const data: C4Relationship = { relationship: true, description: r.data.description, technology: r.data.technology };
+    if (outgoing) addArrow(ea, ltx, boundary, otherBox, data, scope);
+    else addArrow(ea, ltx, otherBox, boundary, data, scope);
+  }
 }
 
 /** Adds the dashed boundary of a layer's scope, labelled at its bottom left as C4 does. */

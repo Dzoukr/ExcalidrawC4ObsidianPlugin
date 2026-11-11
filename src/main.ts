@@ -5,7 +5,7 @@ import {
 } from "./actions";
 import { protectStore } from "./layertx";
 import { AppState, ExcalidrawAPI, ExcalidrawView, VIEW_TYPE_EXCALIDRAW, isExcalidrawView } from "./excalidraw";
-import { C4Kind, KINDS, elementData, hasTechnology, kindTitle } from "./model";
+import { C4Kind, KINDS, boundaryData, elementData, hasTechnology, kindTitle } from "./model";
 import { C4Panel, PANEL_POSITIONS, PanelPosition, isPanelPosition } from "./panel";
 
 const NO_EXCALIDRAW = "The Excalidraw plugin's scripting API is not available.";
@@ -290,7 +290,13 @@ export default class ExcalidrawC4Plugin extends Plugin {
       { key: "technology", name: "Technology", value: data.technology ?? "", placeholder: "E.g. JSON/HTTPS" },
     ];
     const els = view.excalidrawAPI?.getSceneElements() ?? [];
-    const nameOf = (id?: string) => elementData(els.find((e) => e.id === id)?.customData)?.name || "Unnamed";
+    const nameOf = (id?: string) => {
+      const end = els.find((e) => e.id === id);
+      const scope = boundaryData(end?.customData)?.boundary;
+      // A relationship carried down to a boundary: the boundary's label names its system or container.
+      const label = scope ? els.find((e) => e.type === "text" && boundaryData(e.customData)?.boundary === scope)?.text?.split("\n")[0] : undefined;
+      return elementData(end?.customData)?.name || label || "Unnamed";
+    };
     const ends = [nameOf(el.startBinding?.elementId), nameOf(el.endBinding?.elementId)];
     let reversed = false;
     const title = () => (reversed ? [...ends].reverse() : ends).join(" → ");
@@ -432,10 +438,14 @@ class FormModal extends Modal {
       setIcon(b, hb.icon);
       // Next to the close button, wherever the platform and theme put it.
       window.requestAnimationFrame(() => {
-        const close = this.modalEl.querySelector(".modal-close-button, .modal-header-button:not(.c4-modal-action)");
+        const close = this.modalEl.querySelector<HTMLElement>(".modal-close-button, .modal-header-button:not(.c4-modal-action)");
         if (!close) return;
         const gap = 4;
-        b.setCssProps({ "--c4-action-end": `${this.modalEl.getBoundingClientRect().right - close.getBoundingClientRect().left + gap}px` });
+        // Layout offsets, which the modal's opening animation does not scale.
+        const end = close.offsetParent === this.modalEl
+          ? this.modalEl.clientWidth - close.offsetLeft
+          : this.modalEl.getBoundingClientRect().right - close.getBoundingClientRect().left;
+        b.setCssProps({ "--c4-action-end": `${end + gap}px` });
       });
       // Keep focus in the field being typed in.
       b.addEventListener("mousedown", (e) => e.preventDefault());

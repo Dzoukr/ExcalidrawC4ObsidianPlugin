@@ -95,25 +95,34 @@ export function ghostsFor(scene: Scene, current: DiagramId): El[] {
       }
     }
 
-    // Relationships between where their ends are shown, side by side as on the canvas.
+    // Relationships between where their ends are shown, side by side as on the canvas; one carried down to this
+    // level's boundary meets the boundary where it is shown now.
+    const BOUNDARY = "#boundary"; // no element id has a #
+    const endOf = (id: string | undefined): string | undefined => {
+      const e = id ? scene.byId.get(id) : undefined;
+      if (!e) return undefined;
+      return rect && e.id === rect.id ? BOUNDARY : scene.modelId(e) ?? undefined;
+    };
+    const at = (end: string) => (end === BOUNDARY ? next : shown.get(end));
     const pairs = new Map<string, { arrow: El; from: string; to: string }[]>();
-    for (const r of scene.relationships(up)) {
-      handled.add(r.arrow.id);
-      const text = textOf(scene, r.arrow);
+    for (const arrow of scene.elementsIn(up)) {
+      if (arrow.containerId || !relationshipData(arrow.customData)) continue;
+      handled.add(arrow.id);
+      const text = textOf(scene, arrow);
       if (text) handled.add(text.id);
-      const from = scene.modelId(r.from)!;
-      const to = scene.modelId(r.to)!;
-      if (from === scope || to === scope || !shown.has(from) || !shown.has(to)) continue;
+      const from = endOf(arrow.startBinding?.elementId);
+      const to = endOf(arrow.endBinding?.elementId);
+      if (!from || !to || from === scope || to === scope || !at(from) || !at(to)) continue;
       const key = [from, to].sort().join(">");
-      pairs.set(key, [...(pairs.get(key) ?? []), { arrow: r.arrow, from, to }]);
+      pairs.set(key, [...(pairs.get(key) ?? []), { arrow, from, to }]);
     }
     for (const [key, list] of pairs) {
-      const [first, second] = key.split(">").map((id) => shown.get(id)!);
+      const [first, second] = key.split(">").map((end) => at(end)!);
       const normal = normalOf(center(first), center(second));
       const offsets = laneOffsets(list.length);
       list.forEach(({ arrow, from, to }, i) => {
-        const a = shown.get(from)!;
-        const b = shown.get(to)!;
+        const a = at(from)!;
+        const b = at(to)!;
         const { start, end } = laneLine(a, b, normal, offsets[i]);
         const dx = end.x - start.x;
         const dy = end.y - start.y;

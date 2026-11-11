@@ -185,3 +185,23 @@ test("the levels above show around the layer, making way for it, without repeati
   assert.ok(ghosts.every((e) => e.locked && isGhost(e.customData) && !e.startBinding));
   assert.deepEqual(ghostsFor(scene, CONTEXT), []);
 });
+
+test("a relationship carried down to a boundary shows as a ghost one level further down", () => {
+  const at = (e: El, x: number, y: number) => ({ ...e, x, y });
+  const shopTag = { [KEY]: { boundary: "s" } };
+  const webTag = { [KEY]: { boundary: "w" } };
+  const scene = sceneOf({
+    [CONTEXT]: [at(box("user", { kind: "person", id: "u" }), 0, -300), at(box("shop", { kind: "system", id: "s" }), 0, 0)],
+    s: [
+      { ...base, id: "sb", type: "rectangle", x: -200, y: -100, width: 500, height: 300, customData: shopTag },
+      at(box("user2", { kind: "person", id: "u" }), 0, -500),
+      at(box("web", { kind: "container", id: "w", parent: "s" }), -100, 0),
+      arrow("carried", "user2", "sb"),
+    ],
+    w: [{ ...base, id: "wb", type: "rectangle", x: -150, y: -50, width: 300, height: 200, customData: webTag }],
+  });
+  const ghosts = ghostsFor(scene, "w");
+  const carried = ghosts.find((e) => e.id === ghostId("carried"));
+  assert.ok(carried, "the carried relationship is shown");
+  assert.ok(ghosts.some((e) => e.id === ghostId("sb")), "with the boundary it goes to");
+});

@@ -14,7 +14,7 @@ Open an Excalidraw drawing and run one of the commands, or use the panel:
 - **Add relationship between the two selected elements.** It goes from the element selected first to the other one, and also appears one level up, between the elements containing its ends. Two elements can have several relationships; they lie side by side.
 - **Reverse direction of selected relationship.**
 - **Edit selected element or relationship**, also with Enter or a double-click. An element drawn on several levels changes on all of them.
-- **Zoom into the selected system or container**, creating its layer with the elements it has relationships with.
+- **Zoom into the selected system or container**, creating its layer with the elements it has relationships with. Its relationships one level up come down once, as arrows to its boundary, to be moved onto the containers or components they are about.
 - **Zoom out to the layer one level up.**
 
 ## Development
