@@ -1,0 +1,141 @@
+// The levels above the layer on the canvas, shown around it as dimmed, locked copies so the whole picture stays in view.
+// Pure: works on plain element data, no Obsidian or Excalidraw runtime.
+
+import type { El } from "./excalidraw";
+import { CONTEXT, KEY, boundaryData, center, isGhost, laneLine, laneOffsets, makeWay, normalOf, relationshipData } from "./model.ts";
+import type { Box, Vec } from "./model.ts";
+import type { DiagramId, Scene } from "./layers.ts";
+
+const PREFIX = "c4g-";
+const OPACITY = 0.35;
+// Text stays readable on the dimmed boxes: dark and less dimmed.
+const TEXT_OPACITY = 0.6;
+const TEXT_COLOR = "#1e1e1e";
+
+export const ghostId = (id: string) => PREFIX + id;
+
+/** A ghost of an element: the same look, dimmed and locked, unbound, and no C4 element any more. */
+function ghost(e: El, p: Partial<El>): El {
+  const g: El & { index?: unknown } = {
+    ...e,
+    id: ghostId(e.id),
+    locked: true,
+    opacity: Math.round((e.opacity ?? 100) * (e.type === "text" ? TEXT_OPACITY : OPACITY)),
+    ...(e.type === "text" ? { strokeColor: TEXT_COLOR } : {}),
+    customData: { [KEY]: { ghost: true } },
+    groupIds: (e.groupIds ?? []).map(ghostId),
+    containerId: e.containerId ? ghostId(e.containerId) : null,
+    boundElements: null,
+    startBinding: null,
+    endBinding: null,
+    link: null,
+    ...p,
+  };
+  delete g.index; // Excalidraw gives ghosts their own place in the z-order
+  return g;
+}
+
+const textOf = (scene: Scene, e: El): El | undefined => {
+  const ref = e.boundElements?.find((b) => b.type === "text");
+  return ref ? scene.byId.get(ref.id) : undefined;
+};
+
+/** A ghost of an element moved by an offset, with its text. */
+function moved(scene: Scene, e: El, d: Vec): El[] {
+  const text = textOf(scene, e);
+  const g = ghost(e, { x: e.x + d.x, y: e.y + d.y, boundElements: text ? [{ type: "text", id: ghostId(text.id) }] : null });
+  return text ? [g, ghost(text, { x: text.x + d.x, y: text.y + d.y })] : [g];
+}
+
+/**
+ * The ghosts of every level above the layer on the canvas. Each level makes way around the element the level below
+ * opens in, as far as that level reaches; an element drawn in a level below is not repeated. Relationships of the
+ * levels above are drawn between wherever their ends are shown.
+ */
+export function ghostsFor(scene: Scene, current: DiagramId): El[] {
+  const v = scene.view(current);
+  let opened: Box | undefined = v ? scene.boundary(current).rect : undefined;
+  if (!v || !opened) return [];
+  // Where each element is shown, by its id.
+  const shown = new Map<string, Box>(scene.boxes(current).map((b) => [scene.modelId(b)!, b]));
+  const out: El[] = [];
+  let scope = v.scope;
+  for (let guard = 0; guard < 10; guard++) {
+    const up = scene.parentLayer(scope);
+    const scopeBox = scene.boxIn(scope, up);
+    if (!scopeBox || !opened) break;
+    const way = makeWay(scopeBox, opened);
+    const handled = new Set<string>([scopeBox.id]);
+    const here = new Map<string, Box>();
+
+    // Boxes not shown yet, out of the way.
+    for (const b of scene.boxes(up)) {
+      const text = textOf(scene, b);
+      if (text) handled.add(text.id);
+      handled.add(b.id);
+      const id = scene.modelId(b)!;
+      if (id === scope || shown.has(id)) continue;
+      const d = way.move(b);
+      out.push(...moved(scene, b, d));
+      here.set(id, { x: b.x + d.x, y: b.y + d.y, width: b.width, height: b.height });
+    }
+    for (const [id, b] of here) shown.set(id, b);
+
+    // The boundary of this level grows around the level opened in it.
+    const { rect, label } = scene.boundary(up);
+    let next: Box | undefined;
+    if (rect) {
+      next = way.stretch(rect);
+      out.push(ghost(rect, next));
+      handled.add(rect.id);
+      if (label) {
+        // Its label keeps to the bottom left corner.
+        out.push(ghost(label, { x: label.x + next.x - rect.x, y: label.y + next.y + next.height - rect.y - rect.height }));
+        handled.add(label.id);
+      }
+    }
+
+    // Relationships between where their ends are shown, side by side as on the canvas.
+    const pairs = new Map<string, { arrow: El; from: string; to: string }[]>();
+    for (const r of scene.relationships(up)) {
+      handled.add(r.arrow.id);
+      const text = textOf(scene, r.arrow);
+      if (text) handled.add(text.id);
+      const from = scene.modelId(r.from)!;
+      const to = scene.modelId(r.to)!;
+      if (from === scope || to === scope || !shown.has(from) || !shown.has(to)) continue;
+      const key = [from, to].sort().join(">");
+      pairs.set(key, [...(pairs.get(key) ?? []), { arrow: r.arrow, from, to }]);
+    }
+    for (const [key, list] of pairs) {
+      const [first, second] = key.split(">").map((id) => shown.get(id)!);
+      const normal = normalOf(center(first), center(second));
+      const offsets = laneOffsets(list.length);
+      list.forEach(({ arrow, from, to }, i) => {
+        const a = shown.get(from)!;
+        const b = shown.get(to)!;
+        const { start, end } = laneLine(a, b, normal, offsets[i]);
+        const dx = end.x - start.x;
+        const dy = end.y - start.y;
+        const text = textOf(scene, arrow);
+        out.push(ghost(arrow, {
+          x: start.x, y: start.y, points: [[0, 0], [dx, dy]], width: Math.abs(dx), height: Math.abs(dy),
+          boundElements: text ? [{ type: "text", id: ghostId(text.id) }] : null,
+        }));
+        if (text) out.push(ghost(text, { x: start.x + dx / 2 - text.width / 2, y: start.y + dy / 2 - text.height / 2 }));
+      });
+    }
+
+    // Everything else drawn on this level, out of the way like the boxes.
+    for (const e of scene.elementsIn(up)) {
+      if (handled.has(e.id) || e.containerId || isGhost(e.customData) || boundaryData(e.customData) || relationshipData(e.customData)) continue;
+      if (!e.type || e.opacity === 0) continue;
+      out.push(...moved(scene, e, way.move(e)));
+    }
+
+    if (up === CONTEXT) break;
+    scope = up;
+    opened = next;
+  }
+  return out;
+}

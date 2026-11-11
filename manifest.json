@@ -1,0 +1,10 @@
+{
+  "id": "excalidraw-c4",
+  "name": "Excalidraw C4 Model",
+  "version": "0.1.0",
+  "minAppVersion": "1.13.0",
+  "description": "Draw C4 model diagrams (people, systems, containers, components and their relationships) inside Excalidraw drawings.",
+  "author": "Roman Provazník",
+  "authorUrl": "https://github.com/Dzoukr",
+  "isDesktopOnly": false
+}

@@ -1,0 +1,124 @@
+.c4-host {
+  position: relative;
+}
+
+.c4-panel {
+  position: absolute;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  box-shadow: var(--shadow-s);
+}
+
+.c4-panel.c4-hidden {
+  display: none;
+}
+
+/* Docked at the bottom or top: a centered row, wrapping when it doesn't fit. */
+.c4-panel.c4-pos-bottom,
+.c4-panel.c4-pos-top {
+  left: 0;
+  right: 0;
+  margin-inline: auto;
+  width: fit-content;
+  max-width: calc(100% - 32px);
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+/* Sits above Excalidraw's bottom row of zoom and undo controls. */
+.c4-panel.c4-pos-bottom {
+  bottom: 60px;
+}
+
+/* Below Excalidraw's tool bar. */
+.c4-panel.c4-pos-top {
+  top: 72px;
+}
+
+/* Docked on a side: a vertically centered column, scrolling when it doesn't fit. */
+.c4-panel.c4-pos-left,
+.c4-panel.c4-pos-right {
+  top: 0;
+  bottom: 0;
+  margin-block: auto;
+  height: fit-content;
+  max-height: calc(100% - 32px);
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.c4-panel.c4-pos-left {
+  left: 16px;
+}
+
+.c4-panel.c4-pos-right {
+  right: 16px;
+}
+
+.c4-badge {
+  padding: 0 4px;
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-semibold);
+  color: var(--text-muted);
+}
+
+.c4-title {
+  padding: 0 4px;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-normal);
+}
+
+/* In a column, the title runs along it. */
+.c4-pos-left .c4-title,
+.c4-pos-right .c4-title {
+  max-width: none;
+  max-height: 220px;
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+}
+
+.c4-group {
+  display: flex;
+  gap: 2px;
+}
+
+.c4-title + .c4-group,
+.c4-group + .c4-group {
+  border-left: 1px solid var(--background-modifier-border);
+  padding-left: 4px;
+}
+
+.c4-pos-left .c4-group,
+.c4-pos-right .c4-group {
+  flex-direction: column;
+}
+
+.c4-pos-left .c4-title + .c4-group,
+.c4-pos-right .c4-title + .c4-group,
+.c4-pos-left .c4-group + .c4-group,
+.c4-pos-right .c4-group + .c4-group {
+  border-left: none;
+  padding-left: 0;
+  border-top: 1px solid var(--background-modifier-border);
+  padding-top: 4px;
+}
+
+.c4-btn:disabled {
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+/* A form's icon button, styled as its close button and placed left of it. */
+.modal .c4-modal-action {
+  inset-inline-end: var(--c4-action-end, 48px);
+}
