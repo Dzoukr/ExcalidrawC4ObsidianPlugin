@@ -2,7 +2,7 @@
 // Pure: works on plain element data, no Obsidian or Excalidraw runtime.
 
 import type { El } from "./excalidraw";
-import { CONTEXT, MISPLACED_LOOK, boundaryData, center, contains, elementData, lookOf, relationshipData } from "./model.ts"; // with its extension, for the tests running in Node
+import { CONTEXT, MISPLACED_LOOK, STROKE_WIDTH, boundaryData, boxStyle, center, contains, elementData, partOf, relationshipData } from "./model.ts"; // with its extension, for the tests running in Node
 import type { Box, C4Element, C4Relationship, C4View, Vec, ViewKind } from "./model.ts";
 
 /** A layer: the id of its scope, or CONTEXT for the system context. */
@@ -27,6 +27,7 @@ export class Scene {
   private readonly layerOf = new Map<string, DiagramId>(); // by Excalidraw element id
   private readonly data = new Map<string, C4Element>(); // by element id, from its first box
   private readonly boxesById = new Map<string, El[]>();
+  private readonly partsByBox = new Map<string, El[]>(); // the parts drawing a box's shape, back to front
   private readonly views: Readonly<Record<DiagramId, ViewKind | null>>;
 
   constructor(layers: ReadonlyMap<DiagramId, readonly El[]>, views: Readonly<Record<DiagramId, ViewKind | null>>) {
@@ -39,6 +40,8 @@ export class Scene {
       }
     }
     for (const e of this.byId.values()) {
+      const part = partOf(e.customData);
+      if (part) this.partsByBox.set(part, [...(this.partsByBox.get(part) ?? []), e]);
       const d = elementData(e.customData);
       if (!d || e.containerId) continue;
       const id = d.id ?? e.id;
@@ -61,6 +64,11 @@ export class Scene {
 
   boxesOf(id: string): El[] {
     return this.boxesById.get(id) ?? [];
+  }
+
+  /** The parts drawing a box's shape around it, back to front. */
+  parts(boxId: string): El[] {
+    return this.partsByBox.get(boxId) ?? [];
   }
 
   diagramOf(el: El): DiagramId {
@@ -332,7 +340,7 @@ export function unrelated(scene: Scene, layer: DiagramId): El[] {
 
 /**
  * The elements of a layer that come from the levels above, and so cannot be deleted there: the boxes that do not
- * belong to its level with their text, the relationships between them, and its boundary.
+ * belong to its level with their text and the parts of their shape, the relationships between them, and its boundary.
  */
 export function guarded(scene: Scene, layer: DiagramId): Set<string> {
   const stale = new Set(unrelated(scene, layer).map((b) => b.id));
@@ -340,6 +348,7 @@ export function guarded(scene: Scene, layer: DiagramId): Set<string> {
   const withText = (e: El) => {
     out.add(e.id);
     for (const b of e.boundElements ?? []) if (b.type === "text") out.add(b.id);
+    for (const p of scene.parts(e.id)) out.add(p.id);
   };
   for (const e of scene.elementsIn(layer)) {
     if (e.containerId) continue;
@@ -371,7 +380,7 @@ export function markPatches(scene: Scene, layer: DiagramId): [string, Partial<El
   for (const b of scene.boxes(layer)) {
     const marked = b.strokeColor === MISPLACED_LOOK.strokeColor;
     if (bad.has(b.id) && !marked) out.push([b.id, { ...MISPLACED_LOOK }]);
-    else if (!bad.has(b.id) && marked) out.push([b.id, { strokeColor: lookOf(elementData(b.customData)!).stroke, strokeWidth: 1, strokeStyle: "solid" }]);
+    else if (!bad.has(b.id) && marked) out.push([b.id, { strokeColor: boxStyle(elementData(b.customData)!).strokeColor, strokeWidth: STROKE_WIDTH, strokeStyle: "solid" }]);
   }
   return out;
 }

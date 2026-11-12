@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Scene, copiesOf, endsOf, grid, guarded, levelsUpTo, relationshipsWithin, markPatches, misplaced, nextSlot, row, unrelated } from "../src/layers.ts";
-import { BOUNDARY_LABEL, BOUNDARY_PAD, CONTEXT, ELEMENT_WIDTH, KEY, MIN_HEIGHT, MISPLACED_LOOK, allowedKinds, canBeExternal, lookOf, parentKind, fittedBoundary, isGhost, makeWay, overlaps, parentFor, pushOut, storeData, wayBack, zoomView } from "../src/model.ts";
-import { ghostId, ghostTextId, ghostsFor } from "../src/ghosts.ts";
+import { BOUNDARY_LABEL, BOUNDARY_PAD, CONTEXT, ELEMENT_WIDTH, KEY, MIN_HEIGHT, MISPLACED_LOOK, STROKE_WIDTH, allowedKinds, canBeExternal, lookOf, parentKind, fittedBoundary, isGhost, makeWay, overlaps, parentFor, pushOut, storeData, wayBack, zoomView } from "../src/model.ts";
+import { fade, ghostId, ghostTextId, ghostsFor } from "../src/ghosts.ts";
 import type { C4Element, ViewKind } from "../src/model.ts";
 import type { El } from "../src/excalidraw.ts";
 
@@ -287,7 +287,7 @@ test("a box is misplaced outside the boundary of its scope, or inside one it doe
   assert.deepEqual([...patches.keys()].sort(), ["api", "user2"]);
   assert.equal(patches.get("api")!.strokeColor, MISPLACED_LOOK.strokeColor);
   const fixed = sceneOf({ [CONTEXT]: context, s: [rect, at(shop[0], 50, 50), { ...at(shop[1], 200, 50), ...MISPLACED_LOOK }] });
-  assert.deepEqual(markPatches(fixed, "s"), [["api", { strokeColor: lookOf({ kind: "container" }).stroke, strokeWidth: 1, strokeStyle: "solid" }]]);
+  assert.deepEqual(markPatches(fixed, "s"), [["api", { strokeColor: lookOf({ kind: "container" }).stroke, strokeWidth: STROKE_WIDTH, strokeStyle: "solid" }]]);
 });
 
 test("a boundary of a level above grows around its elements drawn in the layer", () => {
@@ -404,4 +404,12 @@ test("a relationship's copies are the same relationship up or down a level, sayi
   assert.deepEqual(copiesOf(scene, scene.byId.get("a1")!).map((a) => a.id).sort(), ["a3", "carried"]);
   assert.deepEqual(copiesOf(scene, scene.byId.get("a3")!).map((a) => a.id), ["a1"]); // up a level, not in its own layer
   assert.deepEqual(copiesOf(scene, scene.byId.get("a4")!), []);
+});
+
+test("ghosts are dimmed by mixing their colors with white, so their fills still hide what is behind them", () => {
+  assert.equal(fade("#ffffff", 0.35), "#ffffff");
+  assert.equal(fade("#000000", 0.5), "#808080");
+  assert.equal(fade("#000", 0.5), "#808080");
+  assert.equal(fade("transparent", 0.35), "transparent");
+  assert.equal(fade("rgba(0,0,0,1)", 0.35), null);
 });

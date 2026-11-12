@@ -2,11 +2,11 @@ import { AppState, El, ExcalidrawAutomate, ExcalidrawView, getEA } from "./excal
 import { ghostSource } from "./ghosts";
 import type { Shape } from "./highlight";
 import { DiagramId, Scene, copiesOf, endOfLevel, endsOf, grid, levelsUpTo, newId, nextSlot, ofLevel, relationshipsWithin, row, unrelated } from "./layers";
-import { LayerTx, readScene } from "./layertx";
+import { LayerTx, readScene, selectionOf } from "./layertx";
 import {
   BOUNDARY_LABEL, BOUNDARY_PAD, Box, C4Element, C4Relationship, ELEMENT_WIDTH, KEY, MIN_HEIGHT, PADDING, RELATIONSHIP_COLOR, Vec, ViewKind, allowedKinds, arrowMidpoint,
   boundaryLabel, bounds, boxSize, canBeExternal, center, contains, edgePoint, elementData, fittedBoundary, laneLine, laneOffsets, normalOf, elementLabel, lookOf, isGhost, makeWay,
-  overlaps, parentFor, parentKind, pushOut, relationshipData, wayBack, relationshipLabel, zoomView, nearestIn,
+  overlaps, parentFor, parentKind, pushOut, relationshipData, wayBack, relationshipLabel, zoomView, nearestIn, boxStyle, partOf, shapeOf, shapeParts, corners, shapeVersionOf, type Ink, MISPLACED_LOOK, SHAPE_VERSION, STROKE_WIDTH,
 } from "./model";
 import type { Direction } from "./model";
 
@@ -25,7 +25,17 @@ export interface SelectedRelationship {
   data: C4Relationship;
 }
 
-/** The selected elements carrying C4 data; selecting a box's or arrow's text counts as selecting the box or arrow. */
+/** The box or arrow a text belongs to, the box a part of a shape belongs to, else the element itself. */
+function ownerOf(byId: ReadonlyMap<string, El>, el: El | undefined): El | undefined {
+  if (el?.containerId) return byId.get(el.containerId);
+  const part = el && partOf(el.customData);
+  return part ? byId.get(part) : el;
+}
+
+/**
+ * The selected elements carrying C4 data; selecting a box's or arrow's text, or a part of a box's shape, counts as
+ * selecting the box or arrow.
+ */
 function selectedC4(view: ExcalidrawView): El[] {
   const api = view.excalidrawAPI;
   if (!api) return [];
@@ -33,8 +43,7 @@ function selectedC4(view: ExcalidrawView): El[] {
   const out = new Map<string, El>();
   for (const [id, on] of Object.entries(api.getAppState().selectedElementIds ?? {})) {
     if (!on) continue;
-    let el = byId.get(id);
-    if (el?.containerId) el = byId.get(el.containerId);
+    const el = ownerOf(byId, byId.get(id));
     if (el && (elementData(el.customData) || relationshipData(el.customData))) out.set(el.id, el);
   }
   return [...out.values()];
@@ -97,7 +106,7 @@ export function selectNext(view: ExcalidrawView, dir: Direction, extend: boolean
   }
   if (!next) return false;
   const ids = extend ? [...selected.map((s) => s.id), next.el.id] : [next.el.id];
-  const appState: Partial<AppState> = { selectedElementIds: Object.fromEntries(ids.map((id) => [id, true])), selectedGroupIds: {} };
+  const appState: Partial<AppState> = selectionOf(api.getSceneElements(), ids);
   // Into view when it is not, with its middle in the middle of the view.
   if (!(next.x >= vp.x && next.y >= vp.y && next.x + next.width <= vp.x + vp.width && next.y + next.height <= vp.y + vp.height)) {
     const c = center(next);
@@ -124,8 +133,7 @@ export function onlyC4Selected(view: ExcalidrawView): boolean {
   const byId = new Map(api.getSceneElements().map((e) => [e.id, e]));
   return Object.entries(api.getAppState().selectedElementIds ?? {}).every(([id, on]) => {
     if (!on) return true;
-    let e = byId.get(id);
-    if (e?.containerId) e = byId.get(e.containerId);
+    const e = ownerOf(byId, byId.get(id));
     return !!e && (!!elementData(e.customData) || !!relationshipData(e.customData));
   });
 }
@@ -183,7 +191,7 @@ export function itemAt(view: ExcalidrawView, p: Vec): El | undefined {
   for (let i = els.length - 1; i >= 0; i--) {
     const e = els[i];
     if (e.locked) continue;
-    const owner = e.containerId ? byId.get(e.containerId) : e;
+    const owner = ownerOf(byId, e);
     if (!owner) continue;
     if (elementData(owner.customData) && inside(e)) return owner;
     if (!relationshipData(owner.customData)) continue;
@@ -218,6 +226,7 @@ function withLayers(view: ExcalidrawView, change: (ea: ExcalidrawAutomate, ltx: 
   try {
     const ltx = new LayerTx(view);
     const to = change(ea, ltx);
+    completeShapes(ea, ltx);
     if (!to) {
       ltx.commit(ea);
       return true;
@@ -231,8 +240,7 @@ function withLayers(view: ExcalidrawView, change: (ea: ExcalidrawAutomate, ltx: 
     if (b && !(b.x >= vp.x && b.y >= vp.y && b.x + b.width <= vp.x + vp.width && b.y + b.height <= vp.y + vp.height)) {
       ea.viewZoomToElements(false, shown);
       // Zooming drops the selection.
-      const selectedElementIds = Object.fromEntries((to.select ?? []).map((id) => [id, true]));
-      api.updateScene({ appState: { selectedElementIds }, captureUpdate: "NEVER" });
+      api.updateScene({ appState: selectionOf(api.getSceneElements(), to.select ?? []), captureUpdate: "NEVER" });
     }
     return true;
   } finally {
@@ -244,12 +252,13 @@ function withLayers(view: ExcalidrawView, change: (ea: ExcalidrawAutomate, ltx: 
 function addBox(ea: ExcalidrawAutomate, ltx: LayerTx, data: C4Element, at: Vec, layer: DiagramId): El {
   const s = ltx.api.getAppState();
   const look = lookOf(data);
+  const style = boxStyle(data);
   ea.clear();
   Object.assign(ea.style, {
     strokeColor: look.text,
     backgroundColor: look.background,
     fillStyle: "solid",
-    strokeWidth: 1,
+    strokeWidth: STROKE_WIDTH,
     strokeStyle: "solid",
     roughness: s.currentItemRoughness,
     roundness: { type: 3 },
@@ -270,11 +279,73 @@ function addBox(ea: ExcalidrawAutomate, ltx: LayerTx, data: C4Element, at: Vec, 
   const els = ea.getElements();
   const box = els.find((e) => e.id === id)!;
   const text = els.find((e) => e.containerId === id);
-  const size = text ? boxSize(text) : { width: Math.max(ELEMENT_WIDTH, box.width), height: Math.max(MIN_HEIGHT, box.height) };
-  Object.assign(box, { x: at.x, y: at.y, ...size, customData: { ...(box.customData ?? {}), [KEY]: data } });
+  const size = text ? boxSize(text, shapeOf(data)) : { width: Math.max(ELEMENT_WIDTH, box.width), height: Math.max(MIN_HEIGHT, box.height) };
+  Object.assign(box, { x: at.x, y: at.y, ...size, ...style, customData: { ...(box.customData ?? {}), [KEY]: data } });
   if (text) Object.assign(text, { x: at.x + (size.width - text.width) / 2, y: at.y + (size.height - text.height) / 2 });
   for (const el of els) ltx.add(el, layer);
+  reshape(ea, ltx, id, data);
   return ltx.get(id)!;
+}
+
+/**
+ * Draws the parts of a box's shape behind it, in place of the ones it had: grouped with the box and its text, so that
+ * they are selected, moved and deleted together.
+ */
+function reshape(ea: ExcalidrawAutomate, ltx: LayerTx, boxId: string, data: C4Element) {
+  const box = ltx.get(boxId);
+  if (!box) return;
+  const old = ltx.partsOf(boxId);
+  const own = old[0]?.groupIds?.[0];
+  for (const p of old) ltx.remove(p.id);
+  const parts = shapeParts(shapeOf(data), box);
+  const groupIds = [...(parts.length ? [own ?? newId()] : []), ...(box.groupIds ?? []).filter((g) => g !== own)];
+  if (JSON.stringify(groupIds) !== JSON.stringify(box.groupIds ?? [])) {
+    ltx.patch(box.id, { groupIds });
+    const text = boundText(ltx, box);
+    if (text) ltx.patch(text.id, { groupIds });
+  }
+  const look = lookOf(data);
+  const marked = box.strokeColor === MISPLACED_LOOK.strokeColor;
+  ltx.patch(box.id, { ...boxStyle(data), ...(marked ? { strokeColor: MISPLACED_LOOK.strokeColor } : { strokeWidth: STROKE_WIDTH, strokeStyle: "solid" }) });
+  const label = boundText(ltx, box);
+  if (label && label.strokeColor !== look.text) ltx.patch(label.id, { strokeColor: look.text });
+  const color: Record<Ink, string> = { outline: look.stroke, detail: look.text, body: look.background, none: "transparent" };
+  for (const part of parts) {
+    ea.clear();
+    Object.assign(ea.style, {
+      strokeColor: color[part.stroke],
+      backgroundColor: color[part.fill],
+      fillStyle: "solid",
+      strokeWidth: STROKE_WIDTH,
+      strokeStyle: "solid",
+      roughness: box.roughness,
+      opacity: 100,
+      angle: 0,
+    });
+    const b = part.box ?? box;
+    const id = part.type === "line"
+      ? ea.addLine((part.points ?? []).map((p) => [p.x, p.y]))
+      : part.type === "ellipse" ? ea.addEllipse(b.x, b.y, b.width, b.height) : ea.addRect(b.x, b.y, b.width, b.height);
+    const pts = part.points ?? [];
+    const closed = pts.length > 2 && pts[0].x === pts[pts.length - 1].x && pts[0].y === pts[pts.length - 1].y;
+    const roundness = part.type === "rectangle" && part.round ? corners(part.round) : null;
+    const el: El = { ...ea.getElement(id), roundness, groupIds, customData: { [KEY]: { part: box.id, shape: SHAPE_VERSION } } };
+    if (part.type === "line") el.polygon = closed;
+    ltx.addBehind(el, box.id);
+  }
+}
+
+/** Redraws the boxes drawn before their shapes and looks were what they are now, such as a person without a head. */
+function completeShapes(ea: ExcalidrawAutomate, ltx: LayerTx) {
+  const scene = ltx.scene();
+  for (const layer of scene.diagrams()) {
+    for (const b of scene.boxes(layer)) {
+      const data = elementData(b.customData)!;
+      const parts = scene.parts(b.id);
+      const current = parts.length === shapeParts(shapeOf(data), b).length && parts.every((p) => shapeVersionOf(p.customData) === SHAPE_VERSION);
+      if (!current || b.backgroundColor !== boxStyle(data).backgroundColor) reshape(ea, ltx, b.id, data);
+    }
+  }
 }
 
 /** Adds a box for the element to the layer on the canvas, and to the element's own layer if that is another one, and selects it. */
@@ -311,7 +382,10 @@ export function addElement(view: ExcalidrawView, element: C4Element): boolean {
       below = up;
     }
   });
-  if (added) view.excalidrawAPI!.updateScene({ appState: { selectedElementIds: { [id]: true } }, captureUpdate: "NEVER" });
+  if (added) {
+    const api = view.excalidrawAPI!;
+    api.updateScene({ appState: selectionOf(api.getSceneElements(), [id]), captureUpdate: "NEVER" });
+  }
   return added;
 }
 
@@ -396,6 +470,7 @@ function moveBox(ltx: LayerTx, boxId: string, dx: number, dy: number) {
   ltx.patch(box.id, { x: box.x + dx, y: box.y + dy });
   const text = boundText(ltx, box);
   if (text) ltx.patch(text.id, { x: text.x + dx, y: text.y + dy });
+  for (const p of ltx.partsOf(box.id)) ltx.patch(p.id, { x: p.x + dx, y: p.y + dy });
   for (const b of box.boundElements ?? []) if (b.type === "arrow") reroute(ltx, b.id);
 }
 
@@ -437,7 +512,7 @@ function restyle(ea: ExcalidrawAutomate, ltx: LayerTx, boxId: string, data: C4El
   if (text) {
     const label = elementLabel(data);
     const m = measure(ea, text, label);
-    const size = boxSize(m);
+    const size = boxSize(m, shapeOf(data));
     const x = c.x - size.width / 2;
     const y = c.y - size.height / 2;
     ltx.patch(box.id, { x, y, ...size });
@@ -445,9 +520,8 @@ function restyle(ea: ExcalidrawAutomate, ltx: LayerTx, boxId: string, data: C4El
       ...textOf(label), ...m, strokeColor: look.text, x: x + (size.width - m.width) / 2, y: y + (size.height - m.height) / 2,
     });
   }
-  ltx.patch(box.id, {
-    backgroundColor: look.background, strokeColor: look.stroke, strokeWidth: 1, strokeStyle: "solid", customData: { ...(box.customData ?? {}), [KEY]: data },
-  });
+  ltx.patch(box.id, { ...boxStyle(data), strokeWidth: STROKE_WIDTH, strokeStyle: "solid", customData: { ...(box.customData ?? {}), [KEY]: data } });
+  reshape(ea, ltx, box.id, data);
   for (const b of box.boundElements ?? []) if (b.type === "arrow") reroute(ltx, b.id);
 }
 
@@ -922,10 +996,11 @@ function reparent(ea: ExcalidrawAutomate, ltx: LayerTx, id: string, parent: stri
   for (const l of layers) fitBoundary(ltx, l, l === home ? placed : []);
 }
 
-/** Takes a box out of its layer, with its text and its relationships. */
+/** Takes a box out of its layer, with its text, the parts of its shape and its relationships. */
 function removeBox(ltx: LayerTx, boxId: string) {
   const box = ltx.get(boxId);
   if (!box) return;
+  for (const p of ltx.partsOf(boxId)) ltx.remove(p.id);
   for (const ref of box.boundElements ?? []) {
     if (ref.type === "arrow") removeArrow(ltx, ref.id);
     else ltx.remove(ref.id);

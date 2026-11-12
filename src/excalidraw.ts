@@ -30,6 +30,7 @@ export type El = {
   strokeWidth?: number;
   strokeStyle?: string;
   roughness: number;
+  roundness?: { type: number; value?: number } | null;
   opacity?: number;
   locked?: boolean;
   link?: string | null;
@@ -87,6 +88,7 @@ export interface ExcalidrawAutomate {
   addArrow(points: number[][], opts?: Record<string, unknown>): string;
   addLine(points: number[][]): string;
   addRect(x: number, y: number, width: number, height: number): string;
+  addEllipse(x: number, y: number, width: number, height: number): string;
   getElement(id: string): El;
   getElements(): El[];
   measureText(text: string): { width: number; height: number };

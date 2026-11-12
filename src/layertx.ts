@@ -1,12 +1,29 @@
-import { El, ExcalidrawAutomate, ExcalidrawView, SceneTx } from "./excalidraw";
+import { AppState, El, ExcalidrawAutomate, ExcalidrawView, SceneTx } from "./excalidraw";
 import { ghostsFor } from "./ghosts";
 import { DiagramId, Scene, endsOf, guarded, markPatches } from "./layers";
-import { C4Store, CONTEXT, KEY, ViewKind, bounds, elementData, isGhost, relationshipData, storeData } from "./model";
+import { C4Store, CONTEXT, KEY, ViewKind, bounds, elementData, isGhost, partOf, relationshipData, storeData } from "./model";
 
 const randomNonce = () => Math.floor(Math.random() * 2 ** 31);
 
 /** The invisible element keeping the layers that are not on the canvas. */
 export const findCarrier = (els: readonly El[]): El | undefined => els.find((e) => !e.isDeleted && storeData(e.customData));
+
+/**
+ * The selection of elements, as Excalidraw makes it when they are clicked: a box drawn with parts is selected with its
+ * group, so that it moves and is deleted with them.
+ */
+export function selectionOf(els: readonly El[], ids: string[]): Pick<AppState, "selectedElementIds" | "selectedGroupIds"> {
+  const selectedElementIds: Record<string, boolean> = {};
+  const selectedGroupIds: Record<string, boolean> = {};
+  for (const id of ids) {
+    selectedElementIds[id] = true;
+    const group = els.find((e) => !e.isDeleted && partOf(e.customData) === id)?.groupIds?.[0];
+    if (!group) continue;
+    selectedGroupIds[group] = true;
+    for (const e of els) if (!e.isDeleted && e.groupIds?.includes(group)) selectedElementIds[e.id] = true;
+  }
+  return { selectedElementIds, selectedGroupIds };
+}
 
 /** The layers kept by a drawing, read from its scene. */
 export function readStore(els: readonly El[]): C4Store {
@@ -82,6 +99,7 @@ export function guardLevels(view: ExcalidrawView, last: Guard | undefined): { gu
     back.add(id);
     if (was.containerId) continue;
     const d = elementData(was.customData);
+    if (partOf(was.customData)) continue; // put back with its box
     restored.push(d ? d.name.trim() || "Unnamed" : relationshipData(was.customData) ? "A relationship" : was.type === "text" ? "" : "The boundary");
   }
   // The relationships glued to what came back, and what they are glued to, as they were.
@@ -222,6 +240,25 @@ export class LayerTx {
     }
   }
 
+  /** The parts drawing a box's shape, in the box's layer, back to front. */
+  partsOf(boxId: string): El[] {
+    const layers = this.tx.get(boxId) ? [this.tx.live()] : [...this.hidden.values()].filter((m) => m.has(boxId)).map((m) => [...m.values()]);
+    return layers.flat().filter((e) => !e.isDeleted && partOf(e.customData) === boxId);
+  }
+
+  /** Adds an element right behind another one, in that one's layer. */
+  addBehind(el: El, id: string) {
+    if (this.tx.get(id)) return this.tx.addBehind(el, id);
+    for (const [layer, m] of this.hidden) {
+      if (!m.has(id)) continue;
+      const entries = [...m.entries()];
+      entries.splice(entries.findIndex(([k]) => k === id), 0, [el.id, el]);
+      this.hidden.set(layer, new Map(entries));
+      this.dirty = true;
+      return;
+    }
+  }
+
   /** Takes an element out of its layer. */
   remove(id: string) {
     if (this.tx.get(id)) {
@@ -306,7 +343,7 @@ export class LayerTx {
     const ghosts = ghostsFor(new Scene(layers, this.store.views), layer);
     this.api.updateScene({
       elements: [...ghosts, ...arriving, carrier],
-      appState: { selectedElementIds: Object.fromEntries(selected.map((id) => [id, true])) },
+      appState: selectionOf([...ghosts, ...arriving], selected),
       captureUpdate: "NEVER",
     });
     this.api.history?.clear();

@@ -6,13 +6,19 @@ Draw [C4 model](https://c4model.com) diagrams in Excalidraw drawings in Obsidian
 
 | Element | Data | Look |
 |---|---|---|
-| Person | name, description | dark blue, grey if external |
-| Software system | name, description | blue, grey if external |
-| Container | name, technology, description | light blue, grey if external |
-| Component | name, technology, description | lightest blue, grey if external |
+| Person | name, description | a head above the body |
+| Software system | name, description | rounded box |
+| Container | type, name, technology, description | shaped by its type |
+| Component | name, technology, description | box with the two small boxes of the UML component symbol on its left side |
 | Relationship | description, technology | dashed grey arrow, label in the middle |
 
 Box text follows the C4 convention: name, `[Kind: technology]`, blank line, description.
+
+### Shapes
+
+The shapes follow the key of the diagrams on c4model.com, white with the outline and text in one color: blue, grey for external elements. Only containers have a `type`, chosen in their form from a row of buttons with a picture of each shape (arrow keys move along it), which gives their shape: **generic** a rounded box (also without a type), **server-side app** a rounded box with a `>_` prompt in its top left corner, **single-page app** a browser window, **database** a cylinder, **storage** a bucket, **directory** a folder. A person has a head in front of the top of a body rounder than Excalidraw rounds a rectangle (a quarter of its height at most), so both are parts, a component the two small boxes of the UML symbol. Every kind and type has the same colors for now.
+
+The box carrying the data and the text stays a rectangle, as Excalidraw only puts text in a rectangle, ellipse or diamond, and relationships are glued to it. Where it is no rectangle shape it is invisible, and the shape is drawn by **parts** behind it (`customData.c4.part`: the id of the box), grouped with the box and its text so they are selected, moved and deleted together. The plugin draws the parts again whenever it changes the box, moves them with it, ghosts them with it, guards them with it, and on its next change to the drawing redraws boxes drawn before their shape or look was what it is now: the parts keep the version of the shapes (`customData.c4.shape`).
 
 Only people and systems, the elements of the system context, say whether they are external. Containers and components are external as their system is: the form does not offer it, and making a system external or internal does the same to everything inside it.
 
@@ -80,7 +86,7 @@ The boundary fits the scope's elements in it, growing or shrinking, with room fo
 - The view stays put unless the new layer does not fit in it.
 - The panel shows the current level (System, Container or Component).
 - Keyboard shortcuts, set in the plugin's settings (each can be recorded again, turned off or restored):
-  - **Insert**: adds an element of the level on the canvas, of the selected element's kind when the level takes it; in the system context the form switches between a person and a system. With two elements selected it adds a relationship between them.
+  - **Insert**: adds an element of the level on the canvas, of the selected element's kind when the level takes it; in the system context the form switches between a person and a system with a row of two buttons picturing them, like the type of a container. With two elements selected it adds a relationship between them.
   - **Enter**: zooms into the selected system or container.
   - **Backspace**: zooms out, with or without a selection. It never deletes a C4 element or relationship; Delete does.
   - **Arrows**: select the nearest element or relationship of the layer that way (a relationship by the middle of its arrow) instead of moving the selection, or with nothing selected the one nearest the middle of the view, scrolling it into view; with **Shift** they add it to the selection, which keeps the order for a relationship. With other drawings selected they move them, as in Excalidraw.
@@ -106,7 +112,7 @@ Deleting a relationship between two elements deletes, in the other layers, every
 
 ## Next
 
-1. **Person shape**: a head circle above the body, grouped with the box.
+1. **Colors per type**: settings for the look of each kind and container type.
 2. **Checks**: relationships one level up that no relationship below accounts for; elements missing from their home diagram.
 3. **Legend**: a generated key of the kinds and arrows used in the drawing.
 4. **Keyboard workflow**, as in the mind map plugin: add a container under the selection, connect it with the selection, etc.

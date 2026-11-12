@@ -141,6 +141,55 @@ body .modal .modal-header-button.c4-modal-action {
   resize: vertical;
 }
 
+/* A container's type: a row of buttons with a picture of each shape, the chosen one pressed. */
+.c4-type-toggle {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 4px;
+  width: 100%;
+}
+
+.c4-form .c4-type-option {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 4px;
+  height: auto;
+  padding: 6px 2px;
+  color: var(--text-muted);
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  box-shadow: none;
+  cursor: var(--cursor);
+}
+
+.c4-form .c4-type-option:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+
+.c4-form .c4-type-option.is-active {
+  color: var(--text-accent);
+  border-color: var(--interactive-accent);
+  background: var(--background-modifier-active-hover);
+}
+
+.c4-type-picture {
+  width: 100%;
+  max-width: 48px;
+  height: 36px;
+  overflow: visible;
+}
+
+.c4-type-name {
+  font-size: var(--font-ui-smaller);
+  line-height: 1.2;
+  text-align: center;
+  white-space: normal;
+}
+
 /* A form's metadata: key: value rows in the column of the fields, with a button to remove each and one to add more. */
 .c4-form .c4-metadata {
   align-items: flex-start;

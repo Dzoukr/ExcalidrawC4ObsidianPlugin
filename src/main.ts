@@ -3,9 +3,12 @@ import {
   Selected, SelectedRelationship, addElement, addRelationship, canAdd, canEdit, canRelate, deleteBelow, diagramInfo, dropBoxes, isRelationship, itemAt, itemOf, reverseRelationship,
   onlyC4Selected, selectNext, selectedElements, selectedItem, selectionShapes, updateElement, updateRelationship, zoomIn, zoomOut,
 } from "./actions";
-import { Guard, guardLevels, protectStore, refreshCanvas } from "./layertx";
+import { Guard, guardLevels, protectStore, refreshCanvas, selectionOf } from "./layertx";
 import { AppState, El, ExcalidrawAPI, ExcalidrawView, VIEW_TYPE_EXCALIDRAW, isExcalidrawView } from "./excalidraw";
-import { C4Kind, KINDS, Vec, boundaryData, canBeExternal, cleanMetadata, elementData, hasTechnology, kindTitle, levelOf, zoomView } from "./model";
+import {
+  C4Kind, CONTAINER_TYPES, CONTAINER_TYPE_TITLES, ContainerType, Ink, KINDS, Shape, Vec, boundaryData, bounds, canBeExternal, cleanMetadata, elementData, hasTechnology,
+  isContainerType, kindTitle, levelOf, shapeDrawing, shapeOf, zoomView,
+} from "./model";
 import { C4Panel, PANEL_POSITIONS, PanelPosition, isPanelPosition } from "./panel";
 import { Highlight } from "./highlight";
 import { DEFAULT_SHORTCUTS, SHORTCUT_ACTIONS, SHORTCUT_NAMES, ShortcutAction, Shortcuts, actionOf, isMove, loadShortcuts, shortcutOf } from "./keys";
@@ -179,7 +182,7 @@ export default class ExcalidrawC4Plugin extends Plugin {
     if (!item) return;
     e.preventDefault();
     e.stopImmediatePropagation();
-    api.updateScene({ appState: { selectedElementIds: { [item.el.id]: true } }, captureUpdate: "NEVER" });
+    api.updateScene({ appState: selectionOf(api.getSceneElements(), [item.el.id]), captureUpdate: "NEVER" });
     // A system or container opens, as Enter does; anything else opens its form. The selection reaches the app state
     // only later, so the item goes along.
     if (!isRelationship(item) && zoomView(item.data)) this.zoomIn(view, item);
@@ -395,13 +398,17 @@ export default class ExcalidrawC4Plugin extends Plugin {
       return;
     }
     let external = initiallyExternal;
+    let type: ContainerType = "generic";
     const rows: [string, string][] = [];
     const heading = () => `Add ${kindTitle(kind, external).toLowerCase()}`;
     const modal = new FormModal(this.app, heading(), elementFields(kind, external), (v) => {
       const metadata = cleanMetadata(rows);
-      const added = addElement(view, { kind, external, name: v.name ?? "", technology: v.technology, description: v.description, metadata });
+      const added = addElement(view, {
+        kind, ...(kind === "container" ? { type } : {}), external, name: v.name ?? "", technology: v.technology, description: v.description, metadata,
+      });
       if (!added) new Notice(NO_EXCALIDRAW);
     });
+    if (kind === "container") modal.before.push(typeToggle(() => type, (t) => (type = t)));
     if (canBeExternal(kind)) modal.extras.push(externalToggle(() => external, (on) => {
       external = on;
       modal.setTitle(heading());
@@ -410,15 +417,11 @@ export default class ExcalidrawC4Plugin extends Plugin {
     // People and systems in the system context, which takes both: the form switches between them, as their fields are the same.
     const choice: C4Kind[] = kinds.filter((k) => !hasTechnology(k));
     if (choice.length > 1 && choice.includes(kind)) {
-      modal.before.push((el) => {
-        new Setting(el).setName("Kind").setClass("c4-field").addDropdown((d) => {
-          for (const k of choice) d.addOption(k, kindTitle(k));
-          d.setValue(kind).onChange((v) => {
-            kind = v as C4Kind;
-            modal.setTitle(heading());
-          });
-        });
-      });
+      const options = choice.map((k) => ({ value: k, title: kindTitle(k), shape: shapeOf({ kind: k }) }));
+      modal.before.push(pictureToggle("Kind", options, () => kind, (k) => {
+        kind = k;
+        modal.setTitle(heading());
+      }));
     }
     modal.open();
   }
@@ -438,6 +441,7 @@ export default class ExcalidrawC4Plugin extends Plugin {
 
   private promptEditElement(view: ExcalidrawView, { el, data }: Selected) {
     let external = !!data.external;
+    let type: ContainerType = isContainerType(data.type) ? data.type : "generic";
     const heading = () => `Edit ${kindTitle(data.kind, external).toLowerCase()}`;
     const values = { name: data.name, technology: data.technology ?? "", description: data.description ?? "" };
     const fields = elementFields(data.kind, external).map((f) => ({ ...f, value: values[f.key as keyof typeof values] }));
@@ -445,9 +449,12 @@ export default class ExcalidrawC4Plugin extends Plugin {
     const modal = new FormModal(this.app, heading(), fields, (v) => {
       const technology = hasTechnology(data.kind) ? v.technology : undefined;
       const metadata = cleanMetadata(rows);
-      const updated = updateElement(view, el.id, { ...data, external, name: v.name ?? "", technology, description: v.description, metadata });
+      const updated = updateElement(view, el.id, {
+        ...data, ...(data.kind === "container" ? { type } : {}), external, name: v.name ?? "", technology, description: v.description, metadata,
+      });
       if (!updated) new Notice(NO_EXCALIDRAW);
     }, "Save");
+    if (data.kind === "container") modal.before.push(typeToggle(() => type, (t) => (type = t)));
     // Containers and components are external as their system is.
     if (canBeExternal(data.kind)) modal.extras.push(externalToggle(() => external, (on) => {
       external = on;
@@ -534,6 +541,87 @@ function elementFields(kind: C4Kind, external: boolean): Field[] {
   if (hasTechnology(kind)) fields.push({ key: "technology", name: "Technology", placeholder: "E.g. Spring Boot, PostgreSQL" });
   fields.push({ key: "description", name: "Description", multiline: true });
   return fields;
+}
+
+/** A choice in a row of buttons with pictures: what it stands for, its name, and the shape pictured. */
+interface PictureOption<T extends string> {
+  value: T;
+  title: string;
+  shape: Shape;
+}
+
+/**
+ * A form setting choosing one of a few options: a row of buttons, each with a picture of a shape, one of them pressed.
+ * The arrow keys move along the row.
+ */
+const pictureToggle = <T extends string>(name: string, options: PictureOption<T>[], get: () => T, set: (value: T) => void) => (el: HTMLElement) => {
+  const setting = new Setting(el).setName(name).setClass("c4-field").setClass("c4-type");
+  const row = setting.controlEl.createDiv({ cls: "c4-type-toggle", attr: { role: "radiogroup", "aria-label": name } });
+  const buttons = options.map((o) => {
+    const b = row.createEl("button", { cls: "c4-type-option", attr: { type: "button", role: "radio", "aria-label": o.title } });
+    shapePicture(b, o.shape);
+    b.createSpan({ cls: "c4-type-name", text: o.title });
+    return b;
+  });
+  const show = () => {
+    options.forEach((o, i) => {
+      const on = o.value === get();
+      buttons[i].toggleClass("is-active", on);
+      buttons[i].setAttr("aria-checked", String(on));
+      buttons[i].tabIndex = on ? 0 : -1;
+    });
+  };
+  const choose = (i: number) => {
+    set(options[i].value);
+    show();
+  };
+  buttons.forEach((b, i) => {
+    b.addEventListener("click", () => choose(i));
+    b.addEventListener("keydown", (e) => {
+      const step = e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 0;
+      if (!step) return;
+      e.preventDefault();
+      const next = (i + step + buttons.length) % buttons.length;
+      choose(next);
+      buttons[next].focus();
+    });
+  });
+  show();
+};
+
+/** The form setting choosing what a container is, which gives its box its shape. */
+const typeToggle = (get: () => ContainerType, set: (type: ContainerType) => void) =>
+  pictureToggle("Type", CONTAINER_TYPES.map((t) => ({ value: t, title: CONTAINER_TYPE_TITLES[t], shape: shapeOf({ kind: "container", type: t }) })), get, set);
+
+/** The colors of a picture of a shape: the current text color for its lines, the background for its fill. */
+const PICTURE_INK: Record<Ink, string> = { outline: "currentColor", detail: "currentColor", body: "var(--background-primary)", none: "none" };
+
+/** Draws a small picture of a shape into an element, from the same parts the shape is drawn with on the canvas. */
+function shapePicture(el: HTMLElement, shape: Shape) {
+  // A small box, so the details of the shapes show; a person's head is as large as on the canvas, so a person's box is too.
+  const parts = shapeDrawing(shape, shape === "person" ? { x: 0, y: 0, width: 240, height: 150 } : { x: 0, y: 0, width: 100, height: 64 });
+  const frame = bounds(parts.map((p) => p.box ?? bounds((p.points ?? []).map((v) => ({ ...v, width: 0, height: 0 })))!), 8)!;
+  const svg = el.createSvg("svg", {
+    cls: "c4-type-picture",
+    attr: { viewBox: `${frame.x} ${frame.y} ${frame.width} ${frame.height}`, "aria-hidden": "true" },
+  });
+  for (const p of parts) {
+    const attr = {
+      stroke: PICTURE_INK[p.stroke], fill: PICTURE_INK[p.fill], "stroke-width": 1.5, "vector-effect": "non-scaling-stroke", "stroke-linejoin": "round",
+    };
+    if (p.type === "line") {
+      const pts = p.points ?? [];
+      const closed = pts.length > 2 && pts[0].x === pts[pts.length - 1].x && pts[0].y === pts[pts.length - 1].y;
+      svg.createSvg(closed ? "polygon" : "polyline", { attr: { ...attr, points: pts.map((v) => `${v.x},${v.y}`).join(" ") } });
+    } else if (p.box && p.type === "ellipse") {
+      const b = p.box;
+      svg.createSvg("ellipse", { attr: { ...attr, cx: b.x + b.width / 2, cy: b.y + b.height / 2, rx: b.width / 2, ry: b.height / 2 } });
+    } else if (p.box) {
+      const b = p.box;
+      const r = Math.min(p.round ?? 0, Math.min(b.width, b.height) / 4);
+      svg.createSvg("rect", { attr: { ...attr, x: b.x, y: b.y, width: b.width, height: b.height, rx: r } });
+    }
+  }
 }
 
 /** The form setting that makes an element external: outside the system being described, drawn in grey. */

@@ -6,10 +6,26 @@ export const KEY = "c4";
 export const KINDS = ["person", "system", "container", "component"] as const;
 export type C4Kind = (typeof KINDS)[number];
 
+/** What a container is, which gives its box its shape. */
+export const CONTAINER_TYPES = ["generic", "storage", "directory", "database", "server", "spa"] as const;
+export type ContainerType = (typeof CONTAINER_TYPES)[number];
+
+export const CONTAINER_TYPE_TITLES: Record<ContainerType, string> = {
+  generic: "Generic",
+  storage: "Storage",
+  directory: "Directory",
+  database: "Database",
+  server: "Server-side app",
+  spa: "Single-page app",
+};
+
+export const isContainerType = (t: unknown): t is ContainerType => CONTAINER_TYPES.includes(t as ContainerType);
+
 /** A person, software system, container or component: the data of its box. */
 export interface C4Element {
   kind: C4Kind;
   name: string;
+  type?: ContainerType; // containers only; generic when not set or not known
   technology?: string; // containers and components only
   description?: string;
   external?: boolean; // outside the system being described
@@ -174,27 +190,194 @@ export interface Look {
   text: string;
 }
 
-// The usual C4 colors: dark to light blue going down the levels, grey for external elements.
+// As in the C4 model's own diagrams: an outline and text in one color on a white fill, grey for external elements.
+// One look for every kind for now; each will get its own colors.
+const INTERNAL: Look = { background: "#ffffff", stroke: "#1168bd", text: "#1168bd" };
+const EXTERNAL: Look = { background: "#ffffff", stroke: "#6b6b6b", text: "#6b6b6b" };
 const LOOKS: Record<C4Kind, { internal: Look; external: Look }> = {
-  person: {
-    internal: { background: "#08427b", stroke: "#073b6f", text: "#ffffff" },
-    external: { background: "#686868", stroke: "#5d5d5d", text: "#ffffff" },
-  },
-  system: {
-    internal: { background: "#1168bd", stroke: "#0f5eaa", text: "#ffffff" },
-    external: { background: "#999999", stroke: "#8a8a8a", text: "#ffffff" },
-  },
-  container: {
-    internal: { background: "#438dd5", stroke: "#3c7fc0", text: "#ffffff" },
-    external: { background: "#b3b3b3", stroke: "#a6a6a6", text: "#ffffff" },
-  },
-  component: {
-    internal: { background: "#85bbf0", stroke: "#78a8d8", text: "#000000" },
-    external: { background: "#cccccc", stroke: "#bfbfbf", text: "#000000" },
-  },
+  person: { internal: INTERNAL, external: EXTERNAL },
+  system: { internal: INTERNAL, external: EXTERNAL },
+  container: { internal: INTERNAL, external: EXTERNAL },
+  component: { internal: INTERNAL, external: EXTERNAL },
 };
 
 export const lookOf = (e: Pick<C4Element, "kind" | "external">): Look => LOOKS[e.kind][e.external ? "external" : "internal"];
+
+/** Width of the outlines of boxes and of the parts of their shapes. */
+export const STROKE_WIDTH = 2;
+
+/**
+ * The shape an element is drawn as, after the key of the C4 model's diagrams. The box carrying the data and the text is
+ * a rectangle, as Excalidraw only puts text in a rectangle, ellipse or diamond; the other shapes are drawn by parts
+ * behind it, grouped with it.
+ */
+export type Shape = "rounded" | "person" | "component" | "terminal" | "cylinder" | "bucket" | "folder" | "browser";
+
+const CONTAINER_SHAPES: Record<ContainerType, Shape> = {
+  generic: "rounded",
+  storage: "bucket",
+  directory: "folder",
+  database: "cylinder",
+  server: "terminal",
+  spa: "browser",
+};
+
+/** The shape of an element; only containers have a type, which picks theirs. */
+export function shapeOf(e: Pick<C4Element, "kind" | "type">): Shape {
+  if (e.kind === "person") return "person";
+  if (e.kind === "component") return "component";
+  if (e.kind === "container") return CONTAINER_SHAPES[isContainerType(e.type) ? e.type : "generic"];
+  return "rounded";
+}
+
+export type Roundness = { type: number; value?: number } | null;
+
+const RADIUS = 12; // corners of a rounded box
+const SMALL_RADIUS = 6; // corners of the boxes making up the other shapes
+const PERSON_RADIUS = 48; // corners of the body of a person, rounder than Excalidraw rounds a rectangle
+
+/** Rounded corners of a radius, as Excalidraw draws them. */
+export const corners = (value: number): Roundness => ({ type: 3, value });
+
+/** How the box itself is drawn: the outline of a rounded box, else invisible, with its parts drawing the shape behind it. */
+export function boxStyle(e: Pick<C4Element, "kind" | "type" | "external">): { roundness: Roundness; strokeColor: string; backgroundColor: string } {
+  const look = lookOf(e);
+  const shape = shapeOf(e);
+  if (shape === "rounded") return { roundness: corners(RADIUS), strokeColor: look.stroke, backgroundColor: look.background };
+  return { roundness: null, strokeColor: "transparent", backgroundColor: "transparent" };
+}
+
+/** A color of an element: its outline, its text (for the details of its shape), its fill, or none. */
+export type Ink = "outline" | "detail" | "body" | "none";
+
+/**
+ * A part of a shape drawn behind its box: a rectangle (with rounded corners of a radius, if given) or ellipse in a box,
+ * or a line through points, closed and filled when it ends where it starts.
+ */
+export interface Part {
+  type: "rectangle" | "ellipse" | "line";
+  box?: Box;
+  points?: Vec[];
+  round?: number;
+  stroke: Ink;
+  fill: Ink;
+}
+
+export const RIM = 14; // half the height of the top of a cylinder or bucket
+export const BAR = 22; // the bar at the top of a browser window
+export const TAB = 14; // how far the tab of a folder stands up
+export const HEAD = 104; // the head of a person
+export const PROMPT = 28; // room for the prompt in the corner of a terminal
+
+/** Points along an ellipse from one angle to another, going clockwise on the screen. */
+function arc(cx: number, cy: number, rx: number, ry: number, from: number, to: number, n = 16): Vec[] {
+  return Array.from({ length: n + 1 }, (_, i) => {
+    const t = from + ((to - from) * i) / n;
+    return { x: cx + rx * Math.cos(t), y: cy + ry * Math.sin(t) };
+  });
+}
+
+/** The closed outline of a box with round corners of a radius, as large as the box lets them be. */
+function roundedOutline(b: Box, radius: number): Vec[] {
+  const r = Math.min(radius, b.width / 2, b.height / 2);
+  const [l, t, rt, bt] = [b.x + r, b.y + r, b.x + b.width - r, b.y + b.height - r];
+  const q = Math.PI / 2;
+  const out = [...arc(l, t, r, r, 2 * q, 3 * q, 8), ...arc(rt, t, r, r, 3 * q, 4 * q, 8), ...arc(rt, bt, r, r, 0, q, 8), ...arc(l, bt, r, r, q, 2 * q, 8)];
+  return [...out, out[0]];
+}
+
+/** A cylinder, or with its sides drawn in at the bottom a bucket: the outline, and the front of its top. */
+function vessel(b: Box, inset: number, bottomRim: number): Part[] {
+  const cx = b.x + b.width / 2;
+  const top = arc(cx, b.y + RIM, b.width / 2, RIM, Math.PI, 2 * Math.PI); // left to right over the top
+  const bottom = arc(cx, b.y + b.height - bottomRim, b.width / 2 - inset, bottomRim, 0, Math.PI); // right to left under it
+  return [
+    { type: "line", points: [...top, ...bottom, top[0]], stroke: "outline", fill: "body" },
+    { type: "line", points: arc(cx, b.y + RIM, b.width / 2, RIM, 0, Math.PI), stroke: "outline", fill: "none" },
+  ];
+}
+
+/** The parts drawing a shape around a box, back to front. */
+export function shapeParts(shape: Shape, b: Box): Part[] {
+  const { x, y, width: w, height: h } = b;
+  switch (shape) {
+    case "rounded":
+      return [];
+    case "person":
+      // The head sits in front of the body, over its top.
+      return [
+        { type: "line", points: roundedOutline(b, PERSON_RADIUS), stroke: "outline", fill: "body" },
+        { type: "ellipse", box: { x: x + w / 2 - HEAD / 2, y: y - HEAD * 0.9, width: HEAD, height: HEAD }, stroke: "outline", fill: "body" },
+      ];
+    case "component": {
+      // The two small boxes of the UML symbol stand out of the left side.
+      const sw = Math.min(w * 0.2, 48);
+      const sh = 18;
+      const small = (i: number): Part => ({
+        type: "rectangle", box: { x: x - sw / 2, y: y + 14 + i * (sh + 8), width: sw, height: sh }, round: 4, stroke: "outline", fill: "body",
+      });
+      return [{ type: "rectangle", box: b, round: SMALL_RADIUS, stroke: "outline", fill: "body" }, small(0), small(1)];
+    }
+    case "terminal":
+      // A command prompt, >_, in the top left corner.
+      return [
+        { type: "rectangle", box: b, round: RADIUS, stroke: "outline", fill: "body" },
+        { type: "line", points: [{ x: x + 12, y: y + 10 }, { x: x + 22, y: y + 17 }, { x: x + 12, y: y + 24 }], stroke: "detail", fill: "none" },
+        { type: "line", points: [{ x: x + 26, y: y + 25 }, { x: x + 38, y: y + 25 }], stroke: "detail", fill: "none" },
+      ];
+    case "cylinder":
+      return vessel(b, 0, RIM / 2);
+    case "bucket":
+      return vessel(b, w * 0.09, RIM * 0.6);
+    case "folder":
+      // The tab stands up behind the top left corner of the folder.
+      return [
+        { type: "rectangle", box: { x: x + 8, y, width: Math.min(w * 0.35, 120), height: 2 * TAB }, round: SMALL_RADIUS, stroke: "outline", fill: "body" },
+        { type: "rectangle", box: { x, y: y + TAB, width: w, height: h - TAB }, round: SMALL_RADIUS, stroke: "outline", fill: "body" },
+      ];
+    case "browser": {
+      // A window with a bar along the top, holding three dots and an address field.
+      const dot = 8;
+      const field = x + 8 + 3 * (dot + 5) + 4;
+      return [
+        { type: "rectangle", box: b, stroke: "outline", fill: "body" },
+        { type: "rectangle", box: { x, y, width: w, height: BAR }, stroke: "outline", fill: "outline" },
+        ...[0, 1, 2].map((i): Part => ({
+          type: "ellipse", box: { x: x + 8 + i * (dot + 5), y: y + BAR / 2 - dot / 2, width: dot, height: dot }, stroke: "body", fill: "body",
+        })),
+        { type: "rectangle", box: { x: field, y: y + BAR / 2 - 5, width: x + w - 8 - field, height: 10 }, round: 5, stroke: "body", fill: "body" },
+      ];
+    }
+  }
+}
+
+/** Everything a shape is drawn with, the outline of a rounded box included, as for a picture of it. */
+export function shapeDrawing(shape: Shape, b: Box): Part[] {
+  return shape === "rounded" ? [{ type: "rectangle", box: b, round: RADIUS, stroke: "outline", fill: "body" }] : shapeParts(shape, b);
+}
+
+/** Room a shape takes inside its box besides the text: the top of a cylinder, the bar of a browser window. */
+function shapeRoom(shape: Shape): number {
+  if (shape === "cylinder" || shape === "bucket") return 2 * RIM;
+  if (shape === "browser") return BAR;
+  if (shape === "folder") return TAB;
+  if (shape === "terminal") return PROMPT;
+  return 0;
+}
+
+/** Key under which a part of a shape keeps the id of its box. */
+export const partOf = (customData: Record<string, unknown> | undefined): string | null => {
+  const p = (customData?.[KEY] as { part?: unknown } | undefined)?.part;
+  return typeof p === "string" ? p : null;
+};
+
+/** Version of the shapes, kept on their parts: parts drawn by an earlier one are drawn again. */
+export const SHAPE_VERSION = 4;
+
+export const shapeVersionOf = (customData: Record<string, unknown> | undefined): number => {
+  const v = (customData?.[KEY] as { shape?: unknown } | undefined)?.shape;
+  return typeof v === "number" ? v : 1;
+};
 
 export const RELATIONSHIP_COLOR = "#707070";
 
@@ -330,10 +513,13 @@ export function fittedBoundary(current: Box, inner: Box[], label?: { width: numb
   return { x: c.x - width / 2, y: c.y - height / 2, width, height };
 }
 
-/** Size of an element's box around its text: C4 boxes look alike, so at least a fixed size. */
-export const boxSize = (text: { width: number; height: number }) => ({
+/**
+ * Size of an element's box around its text: C4 boxes look alike, so at least a fixed size. With room for its shape,
+ * which the text is centered in.
+ */
+export const boxSize = (text: { width: number; height: number }, shape: Shape = "rounded") => ({
   width: Math.max(ELEMENT_WIDTH, text.width + 2 * PADDING),
-  height: Math.max(MIN_HEIGHT, text.height + 2 * PADDING),
+  height: Math.max(MIN_HEIGHT, text.height + 2 * PADDING + 2 * shapeRoom(shape)),
 });
 
 /** Middle of an arrow, where its label goes: halfway along a straight arrow, else its middle point. */

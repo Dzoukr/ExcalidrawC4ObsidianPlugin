@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cleanMetadata, nearestIn, ELEMENT_WIDTH, KEY, MIN_HEIGHT, PADDING, arrowMidpoint, boxSize, edgePoint, laneLine, laneOffsets, normalOf, rayExit, elementData, elementLabel, lookOf, relationshipData, relationshipLabel, wrap } from "../src/model.ts";
+import { SHAPE_VERSION, shapeDrawing, shapeVersionOf, boxStyle, partOf, shapeOf, shapeParts, cleanMetadata, nearestIn, ELEMENT_WIDTH, KEY, MIN_HEIGHT, PADDING, arrowMidpoint, boxSize, edgePoint, laneLine, laneOffsets, normalOf, rayExit, elementData, elementLabel, lookOf, relationshipData, relationshipLabel, wrap } from "../src/model.ts";
 
 test("wrap breaks at word boundaries and keeps paragraphs", () => {
   assert.deepEqual(wrap("one two three four", 9), ["one two", "three", "four"]);
@@ -32,7 +32,7 @@ test("data is recognized only with the right shape", () => {
 });
 
 test("external elements are grey", () => {
-  assert.notEqual(lookOf({ kind: "system" }).background, lookOf({ kind: "system", external: true }).background);
+  assert.notEqual(lookOf({ kind: "system" }).stroke, lookOf({ kind: "system", external: true }).stroke);
 });
 
 test("edgePoint finds where the line toward a point leaves the box", () => {
@@ -92,4 +92,72 @@ test("going in a direction picks the nearest box that way, straight ahead before
   assert.equal(nearestIn(boxes, from, "down")?.id, "below");
   assert.equal(nearestIn(boxes, from, "left")?.id, "left");
   assert.equal(nearestIn(boxes, from, "up"), undefined);
+});
+
+test("a container's type gives its shape; without one it is generic, a rounded box like a system; only containers have a type", () => {
+  assert.equal(shapeOf({ kind: "person" }), "person");
+  assert.equal(shapeOf({ kind: "system" }), "rounded");
+  assert.equal(shapeOf({ kind: "container" }), "rounded");
+  assert.equal(shapeOf({ kind: "container", type: "generic" }), "rounded");
+  assert.equal(shapeOf({ kind: "container", type: "database" }), "cylinder");
+  assert.equal(shapeOf({ kind: "container", type: "storage" }), "bucket");
+  assert.equal(shapeOf({ kind: "container", type: "directory" }), "folder");
+  assert.equal(shapeOf({ kind: "container", type: "server" }), "terminal");
+  assert.equal(shapeOf({ kind: "container", type: "spa" }), "browser");
+  assert.equal(shapeOf({ kind: "component", type: "database" }), "component");
+  assert.equal(shapeOf({ kind: "system", type: "database" }), "rounded");
+});
+
+test("a box drawn by parts is invisible itself, a rectangle shape is the box", () => {
+  assert.equal(boxStyle({ kind: "container", type: "database" }).backgroundColor, "transparent");
+  assert.equal(boxStyle({ kind: "container", type: "server" }).backgroundColor, "transparent");
+  assert.equal(boxStyle({ kind: "component" }).backgroundColor, "transparent");
+  assert.equal(boxStyle({ kind: "system" }).roundness?.type, 3);
+  assert.equal(boxStyle({ kind: "person" }).backgroundColor, "transparent");
+  assert.equal(boxStyle({ kind: "system" }).backgroundColor, lookOf({ kind: "system" }).background);
+});
+
+test("the parts of a shape lie in its box, except a person's head above it and a component's small boxes left of it", () => {
+  const box = { x: 10, y: 20, width: 240, height: 150 };
+  assert.deepEqual(shapeParts("rounded", box), []);
+  const inside = (x: number, y: number) => x >= box.x - 1e-9 && x <= box.x + box.width + 1e-9 && y >= box.y - 1e-9 && y <= box.y + box.height + 1e-9;
+  for (const shape of ["terminal", "cylinder", "bucket", "folder", "browser"] as const) {
+    const parts = shapeParts(shape, box);
+    assert.ok(parts.length, shape);
+    for (const p of parts) {
+      for (const v of p.points ?? []) assert.ok(inside(v.x, v.y), shape);
+      if (p.box) assert.ok(inside(p.box.x, p.box.y) && inside(p.box.x + p.box.width, p.box.y + p.box.height), shape);
+    }
+    const outline = parts[0].points;
+    if (outline) assert.deepEqual(outline[0], outline[outline.length - 1], `${shape} outline is closed`);
+  }
+  const [body, head] = shapeParts("person", box);
+  assert.equal(head.type, "ellipse");
+  for (const v of body.points!) assert.ok(inside(v.x, v.y), "the body is the box");
+  assert.deepEqual(body.points![0], body.points![body.points!.length - 1], "the body is closed");
+  assert.ok(head.box!.y < box.y && head.box!.y + head.box!.height > box.y, "the head sits on the body");
+  const [frame, ...small] = shapeParts("component", box);
+  assert.deepEqual(frame.box, box);
+  assert.equal(small.length, 2);
+  for (const s of small) assert.ok(s.box!.x < box.x && s.box!.x + s.box!.width > box.x, "the small boxes stand out of the left side");
+});
+
+test("a shape with a top or a bar leaves the text room", () => {
+  const text = { width: 100, height: 140 };
+  assert.ok(boxSize(text, "cylinder").height > boxSize(text).height);
+  assert.ok(boxSize(text, "browser").height > boxSize(text).height);
+  assert.ok(boxSize(text, "terminal").height > boxSize(text).height);
+});
+
+test("a part keeps the id of its box", () => {
+  assert.equal(partOf({ [KEY]: { part: "box1" } }), "box1");
+  assert.equal(partOf({ [KEY]: { kind: "system", name: "X" } }), null);
+  assert.equal(shapeVersionOf({ [KEY]: { part: "box1" } }), 1);
+  assert.equal(shapeVersionOf({ [KEY]: { part: "box1", shape: SHAPE_VERSION } }), SHAPE_VERSION);
+});
+
+test("a picture of a shape draws a rounded box's own outline too", () => {
+  const box = { x: 0, y: 0, width: 240, height: 150 };
+  assert.equal(shapeDrawing("rounded", box).length, 1);
+  assert.deepEqual(shapeDrawing("cylinder", box), shapeParts("cylinder", box));
 });

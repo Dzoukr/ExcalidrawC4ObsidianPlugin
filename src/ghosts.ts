@@ -30,14 +30,36 @@ const idOf = (e: El) => (e.type === "text" ? ghostTextId(e.id) : ghostId(e.id));
 /** The id of the element a ghost is a copy of. */
 export const ghostSource = (id: string): string | null => (id.startsWith(PREFIX) ? id.slice(PREFIX.length) : null);
 
+/** A color mixed with white, keeping a share of it; null for a color that is no hex color. */
+export function fade(color: string, share: number): string | null {
+  if (color === "transparent") return color;
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(color);
+  if (!m) return null;
+  const hex = m[1].length === 3 ? [...m[1]].map((c) => c + c).join("") : m[1];
+  const mix = [0, 2, 4].map((i) => Math.round(255 - (255 - parseInt(hex.slice(i, i + 2), 16)) * share));
+  return "#" + mix.map((v) => v.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * How a ghost is dimmed. Text is made dark and less dimmed, to stay readable. Shapes get their colors mixed with white
+ * rather than made see-through, so a shape still hides what is behind it, such as the head of a person the top of its
+ * body; colors that cannot be mixed are made see-through.
+ */
+function dim(e: El): Partial<El> {
+  if (e.type === "text") return { opacity: Math.round((e.opacity ?? 100) * TEXT_OPACITY), strokeColor: TEXT_COLOR };
+  const strokeColor = fade(e.strokeColor, OPACITY);
+  const backgroundColor = fade(e.backgroundColor, OPACITY);
+  if (strokeColor === null || backgroundColor === null) return { opacity: Math.round((e.opacity ?? 100) * OPACITY) };
+  return { strokeColor, backgroundColor };
+}
+
 /** A ghost of an element: the same look, dimmed and locked, unbound, and no C4 element any more. */
 function ghost(e: El, p: Partial<El>): El {
   const g: El & { index?: unknown } = {
     ...e,
     id: idOf(e),
     locked: true,
-    opacity: Math.round((e.opacity ?? 100) * (e.type === "text" ? TEXT_OPACITY : OPACITY)),
-    ...(e.type === "text" ? { strokeColor: TEXT_COLOR } : {}),
+    ...dim(e),
     customData: { [KEY]: { ghost: true } },
     groupIds: (e.groupIds ?? []).map(ghostId),
     containerId: e.containerId ? ghostId(e.containerId) : null,
@@ -66,11 +88,12 @@ const textOf = (scene: Scene, e: El): El | undefined => {
   return ref ? scene.byId.get(ref.id) : undefined;
 };
 
-/** A ghost of an element moved by an offset, with its text. */
+/** A ghost of an element moved by an offset, with the parts of its shape behind it and its text. */
 function moved(scene: Scene, e: El, d: Vec): El[] {
   const text = textOf(scene, e);
+  const parts = scene.parts(e.id).map((p) => ghost(p, { x: p.x + d.x, y: p.y + d.y }));
   const g = ghost(e, { x: e.x + d.x, y: e.y + d.y, boundElements: text ? [{ type: "text", id: ghostTextId(text.id) }] : null });
-  return text ? [g, ghost(text, { x: text.x + d.x, y: text.y + d.y })] : [g];
+  return text ? [...parts, g, ghost(text, { x: text.x + d.x, y: text.y + d.y })] : [...parts, g];
 }
 
 /**
@@ -98,6 +121,7 @@ export function ghostsFor(scene: Scene, current: DiagramId): El[] {
     for (const b of scene.boxes(up)) {
       const text = textOf(scene, b);
       if (text) handled.add(text.id);
+      for (const p of scene.parts(b.id)) handled.add(p.id);
       handled.add(b.id);
       const id = scene.modelId(b)!;
       if (id === scope || shown.has(id)) continue;
