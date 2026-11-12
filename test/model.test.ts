@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { FONT_SIZE, NAME_FONT_SIZE, ROOM_LINE, SHAPE_VERSION, nameRoom, nameText, shapeDrawing, shapeVersionOf, boxStyle, partOf, shapeOf, shapeParts, cleanMetadata, nearestIn, ELEMENT_WIDTH, KEY, MIN_HEIGHT, PADDING, arrowMidpoint, boxSize, edgePoint, laneLine, laneOffsets, normalOf, rayExit, elementData, elementLabel, lookOf, relationshipData, relationshipLabel, wrap } from "../src/model.ts";
+import { mergeColors } from "../src/themes.ts";
+import { DEFAULT_LOOKS, lookKeyOf, lookSignature, lookSignatureOf, ownLook, useColors, FONT_SIZE, NAME_FONT_SIZE, ROOM_LINE, SHAPE_VERSION, nameRoom, nameText, shapeDrawing, shapeVersionOf, boxStyle, partOf, shapeOf, shapeParts, cleanMetadata, nearestIn, ELEMENT_WIDTH, KEY, MIN_HEIGHT, PADDING, arrowMidpoint, boxSize, edgePoint, laneLine, laneOffsets, normalOf, rayExit, elementData, elementLabel, lookOf, relationshipData, relationshipLabel, wrap } from "../src/model.ts";
 
 test("wrap breaks at word boundaries and keeps paragraphs", () => {
   assert.deepEqual(wrap("one two three four", 9), ["one two", "three", "four"]);
@@ -173,4 +174,25 @@ test("the larger name is drawn over room kept for it at the top of the text of a
   }
   assert.equal(nameText({ name: " " }), "Unnamed");
   assert.ok(ROOM_LINE.trim(), "nothing trims the room away");
+});
+
+test("each type of element has its colors from the settings, an element its own over them", () => {
+  try {
+    useColors(mergeColors({ "container-database": { stroke: "#ff0000", text: "not a color" }, external: { background: "#eeeeee" } }));
+    const db = { kind: "container" as const, type: "database" as const };
+    assert.equal(lookKeyOf(db), "container-database");
+    assert.equal(lookKeyOf({ ...db, external: true }), "external");
+    assert.equal(lookKeyOf({ kind: "container" }), "container-generic");
+    assert.deepEqual(lookOf(db), { ...DEFAULT_LOOKS["container-database"], stroke: "#ff0000" });
+    assert.equal(lookOf({ kind: "system", external: true }).background, "#eeeeee");
+    assert.deepEqual(lookOf({ ...db, look: { text: "#00ff00" } }), { ...DEFAULT_LOOKS["container-database"], stroke: "#ff0000", text: "#00ff00" });
+    assert.equal(lookOf({ kind: "person" }).stroke, DEFAULT_LOOKS.person.stroke);
+    // Only the colors that differ from the type's are the element's own.
+    assert.deepEqual(ownLook(db, { stroke: "#FF0000", text: "#00ff00" }), { text: "#00ff00" });
+    assert.equal(ownLook(db, { stroke: "#ff0000" }), undefined);
+    assert.notEqual(lookSignature(lookOf(db)), lookSignature(DEFAULT_LOOKS["container-database"]));
+    assert.equal(lookSignatureOf({ [KEY]: { part: "b", look: lookSignature(lookOf(db)) } }), lookSignature(lookOf(db)));
+  } finally {
+    useColors(DEFAULT_LOOKS);
+  }
 });

@@ -2,10 +2,11 @@ import { AppState, El, ExcalidrawAutomate, ExcalidrawView, getEA } from "./excal
 import { ghostSource } from "./ghosts";
 import type { Shape } from "./highlight";
 import { DiagramId, Scene, copiesOf, endOfLevel, endsOf, grid, levelsUpTo, newId, nextSlot, ofLevel, relationshipsWithin, row, unrelated } from "./layers";
-import { LayerTx, readScene, selectionOf } from "./layertx";
+import { LayerTx, readScene, readStore, selectionOf } from "./layertx";
+import { Theme, colorsOf, themeOfNewDrawings } from "./themes";
 import {
   BOUNDARY_LABEL, BOUNDARY_PAD, Box, C4Element, C4Relationship, ELEMENT_WIDTH, KEY, MIN_HEIGHT, PADDING, RELATIONSHIP_COLOR, Vec, ViewKind, allowedKinds, arrowMidpoint,
-  boundaryLabel, bounds, boxSize, canBeExternal, center, contains, edgePoint, elementData, fittedBoundary, laneLine, laneOffsets, normalOf, elementLabel, lookOf, isGhost, makeWay, nameText, FONT_SIZE, NAME_FONT_SIZE,
+  boundaryLabel, bounds, boxSize, canBeExternal, center, contains, edgePoint, elementData, fittedBoundary, laneLine, laneOffsets, normalOf, elementLabel, lookOf, isGhost, makeWay, nameText, FONT_SIZE, NAME_FONT_SIZE, lookSignature, lookSignatureOf, useColors,
   overlaps, parentFor, parentKind, pushOut, relationshipData, wayBack, relationshipLabel, zoomView, nearestIn, boxStyle, partOf, shapeOf, shapeParts, corners, shapeVersionOf, type Ink, MISPLACED_LOOK, SHAPE_VERSION, STROKE_WIDTH,
 } from "./model";
 import type { Direction } from "./model";
@@ -224,7 +225,12 @@ function withLayers(view: ExcalidrawView, change: (ea: ExcalidrawAutomate, ltx: 
   if (!ea || !view.excalidrawAPI) return false;
   try {
     const ltx = new LayerTx(view);
+    useColors(colorsOf(ltx.theme ?? themeOfNewDrawings()));
     const to = change(ea, ltx);
+    // A drawing takes the theme of new drawings with its first C4 element, and keeps it.
+    const scene = ltx.scene();
+    if (!ltx.theme && scene.diagrams().some((d) => scene.boxes(d).length)) ltx.setTheme(themeOfNewDrawings());
+    useColors(colorsOf(ltx.theme ?? themeOfNewDrawings()));
     completeShapes(ea, ltx);
     if (!to) {
       ltx.commit(ea);
@@ -245,6 +251,26 @@ function withLayers(view: ExcalidrawView, change: (ea: ExcalidrawAutomate, ltx: 
   } finally {
     ea.destroy?.();
   }
+}
+
+/** The drawing's theme; for a drawing without C4 elements yet, the one it will get. */
+export function themeOfDrawing(view: ExcalidrawView): Theme {
+  return readStore(view.excalidrawAPI?.getSceneElements() ?? []).theme ?? themeOfNewDrawings();
+}
+
+/** Makes the colors of the drawing's theme the ones elements are drawn in, as for a form showing them. */
+export function useDrawingColors(view: ExcalidrawView) {
+  useColors(colorsOf(themeOfDrawing(view)));
+}
+
+/** Gives the drawing another theme, and draws its elements in its colors, in every layer. */
+export function setDrawingTheme(view: ExcalidrawView, theme: Theme): boolean {
+  return withLayers(view, (_ea, ltx) => ltx.setTheme(theme));
+}
+
+/** Draws the elements of a drawing, in every layer, in the colors they have now, after the colors of their types changed. */
+export function refreshLooks(view: ExcalidrawView): boolean {
+  return withLayers(view, () => undefined);
 }
 
 /** Adds a box with the element's label at a point, in a layer. Returns the box. */
@@ -327,7 +353,7 @@ function reshape(ea: ExcalidrawAutomate, ltx: LayerTx, boxId: string, data: C4El
     const pts = part.points ?? [];
     const closed = pts.length > 2 && pts[0].x === pts[pts.length - 1].x && pts[0].y === pts[pts.length - 1].y;
     const roundness = part.type === "rectangle" && part.round ? corners(part.round) : null;
-    const el: El = { ...ea.getElement(id), roundness, groupIds, customData: { [KEY]: { part: box.id, shape: SHAPE_VERSION } } };
+    const el: El = { ...ea.getElement(id), roundness, groupIds, customData: { [KEY]: { part: box.id, shape: SHAPE_VERSION, look: lookSignature(look) } } };
     if (part.type === "line") el.polygon = closed;
     ltx.addBehind(el, box.id);
   }
@@ -336,9 +362,10 @@ function reshape(ea: ExcalidrawAutomate, ltx: LayerTx, boxId: string, data: C4El
 
 /** The name of an element, larger than the rest of the text of its box, over the room the text keeps for it at the top. */
 function nameOver(ea: ExcalidrawAutomate, label: El, box: El, data: C4Element, groupIds: string[]): El {
+  const look = lookOf(data);
   ea.clear();
   Object.assign(ea.style, {
-    strokeColor: label.strokeColor, opacity: 100, angle: 0, fontFamily: label.fontFamily, fontSize: NAME_FONT_SIZE, textAlign: "center",
+    strokeColor: look.text, opacity: 100, angle: 0, fontFamily: label.fontFamily, fontSize: NAME_FONT_SIZE, textAlign: "center",
   });
   const name = ea.getElement(ea.addText(0, 0, nameText(data), { textAlign: "center" }));
   return {
@@ -346,7 +373,7 @@ function nameOver(ea: ExcalidrawAutomate, label: El, box: El, data: C4Element, g
     x: box.x + box.width / 2 - name.width / 2,
     y: label.y,
     groupIds,
-    customData: { [KEY]: { part: box.id, shape: SHAPE_VERSION } },
+    customData: { [KEY]: { part: box.id, shape: SHAPE_VERSION, look: lookSignature(look) } },
   };
 }
 
@@ -368,8 +395,12 @@ function completeShapes(ea: ExcalidrawAutomate, ltx: LayerTx) {
       const data = elementData(b.customData)!;
       const parts = scene.parts(b.id);
       const named = b.boundElements?.some((r) => r.type === "text") ? 1 : 0; // the bold name over its text
-      const current = parts.length === shapeParts(shapeOf(data), b).length + named && parts.every((p) => shapeVersionOf(p.customData) === SHAPE_VERSION);
-      if (!current || b.backgroundColor !== boxStyle(data).backgroundColor) restyle(ea, ltx, b.id, data);
+      const shaped = parts.length === shapeParts(shapeOf(data), b).length + named && parts.every((p) => shapeVersionOf(p.customData) === SHAPE_VERSION);
+      const look = lookSignature(lookOf(data));
+      const colored = parts.every((p) => lookSignatureOf(p.customData) === look) && b.backgroundColor === boxStyle(data).backgroundColor;
+      // Only new colors leave the box its size, which may be one the user gave it.
+      if (!shaped) restyle(ea, ltx, b.id, data);
+      else if (!colored) reshape(ea, ltx, b.id, data);
     }
   }
 }

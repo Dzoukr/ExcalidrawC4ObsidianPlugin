@@ -32,6 +32,7 @@ export interface C4Element {
   id?: string; // the same element in every diagram; the box's own id for elements drawn before ids
   parent?: string; // the system of a container, the container of a component
   metadata?: Record<string, string>; // key: value pairs, not drawn
+  look?: Partial<Look>; // colors of this element, over those of its type
 }
 
 /** The data of a relationship arrow. */
@@ -61,6 +62,7 @@ export interface C4Store {
   current: string;
   views: Record<string, ViewKind | null>; // every layer, null for the system context
   hidden: Record<string, unknown[]>; // the elements of every layer but the current one
+  theme?: string; // the drawing's colors: a built-in theme or one of the user's; none before the drawing had C4 elements
 }
 
 /** The dashed boundary of a diagram's scope, and its label. */
@@ -198,24 +200,86 @@ export function wrap(text: string, width: number): string[] {
   return out;
 }
 
+/** The colors of an element: its outline, its fill and its text. */
 export interface Look {
   background: string;
   stroke: string;
   text: string;
 }
 
-// As in the C4 model's own diagrams: an outline and text in one color on a white fill, grey for external elements.
-// One look for every kind for now; each will get its own colors.
-const INTERNAL: Look = { background: "#ffffff", stroke: "#1168bd", text: "#1168bd" };
-const EXTERNAL: Look = { background: "#ffffff", stroke: "#6b6b6b", text: "#6b6b6b" };
-const LOOKS: Record<C4Kind, { internal: Look; external: Look }> = {
-  person: { internal: INTERNAL, external: EXTERNAL },
-  system: { internal: INTERNAL, external: EXTERNAL },
-  container: { internal: INTERNAL, external: EXTERNAL },
-  component: { internal: INTERNAL, external: EXTERNAL },
+export const LOOK_PARTS = ["stroke", "background", "text"] as const;
+export const LOOK_PART_TITLES: Record<keyof Look, string> = { stroke: "Outline", background: "Fill", text: "Text" };
+
+/** The types of element with colors of their own: the kinds, each type of container, and all external elements. */
+export const LOOK_KEYS = [
+  "person", "system", ...CONTAINER_TYPES.map((t) => `container-${t}` as const), "component", "external",
+] as const;
+export type LookKey = (typeof LOOK_KEYS)[number];
+
+export const LOOK_KEY_TITLES: Record<LookKey, string> = {
+  person: "Person",
+  system: "Software system",
+  ...(Object.fromEntries(CONTAINER_TYPES.map((t) => [`container-${t}`, `Container: ${CONTAINER_TYPE_TITLES[t]}`])) as Record<`container-${ContainerType}`, string>),
+  component: "Component",
+  external: "External element",
 };
 
-export const lookOf = (e: Pick<C4Element, "kind" | "external">): Look => LOOKS[e.kind][e.external ? "external" : "internal"];
+// As in the C4 model's own diagrams: an outline and text in one color on a white fill, grey for external elements.
+const INTERNAL: Look = { background: "#ffffff", stroke: "#1168bd", text: "#1168bd" };
+const EXTERNAL: Look = { background: "#ffffff", stroke: "#6b6b6b", text: "#6b6b6b" };
+export const DEFAULT_LOOKS: Record<LookKey, Look> = Object.fromEntries(
+  LOOK_KEYS.map((k) => [k, k === "external" ? EXTERNAL : INTERNAL]),
+) as Record<LookKey, Look>;
+
+let looks: Record<LookKey, Look> = DEFAULT_LOOKS;
+
+const isColor = (c: unknown): c is string => typeof c === "string" && /^#[0-9a-f]{6}$/i.test(c);
+
+/** The colors of a type from settings: the colors saved for it, with its defaults for any missing or not a color. */
+export function lookFrom(saved: Partial<Look> | undefined, key: LookKey): Look {
+  const out = { ...DEFAULT_LOOKS[key] };
+  for (const p of LOOK_PARTS) if (isColor(saved?.[p])) out[p] = saved[p];
+  return out;
+}
+
+/** Sets the colors of the types of element: those of the theme of the drawing being drawn. */
+export function useColors(colors: Record<LookKey, Look>) {
+  looks = colors;
+}
+
+/** The type of element whose colors an element has. */
+export function lookKeyOf(e: Pick<C4Element, "kind" | "type" | "external">): LookKey {
+  if (e.external) return "external";
+  if (e.kind === "container") return `container-${isContainerType(e.type) ? e.type : "generic"}`;
+  return e.kind;
+}
+
+/** The colors of an element's type. */
+export const typeLookOf = (e: Pick<C4Element, "kind" | "type" | "external">): Look => looks[lookKeyOf(e)];
+
+/** The colors of an element: its own, where it has them, else those of its type. */
+export function lookOf(e: Pick<C4Element, "kind" | "type" | "external" | "look">): Look {
+  const out = { ...typeLookOf(e) };
+  for (const p of LOOK_PARTS) if (isColor(e.look?.[p])) out[p] = e.look[p];
+  return out;
+}
+
+/** An element's own colors: only those that differ from its type's, none when all are the same. */
+export function ownLook(e: Pick<C4Element, "kind" | "type" | "external">, look: Partial<Look>): Partial<Look> | undefined {
+  const type = typeLookOf(e);
+  const out: Partial<Look> = {};
+  for (const p of LOOK_PARTS) if (isColor(look[p]) && look[p].toLowerCase() !== type[p].toLowerCase()) out[p] = look[p];
+  return Object.keys(out).length ? out : undefined;
+}
+
+/** The colors of a look as one string, kept on the parts of a shape to tell when they need drawing again. */
+export const lookSignature = (look: Look): string => LOOK_PARTS.map((p) => look[p].toLowerCase()).join(" ");
+
+/** The colors a part of a shape was drawn in, as a string. */
+export const lookSignatureOf = (customData: Record<string, unknown> | undefined): string | null => {
+  const v = (customData?.[KEY] as { look?: unknown } | undefined)?.look;
+  return typeof v === "string" ? v : null;
+};
 
 /** Width of the outlines of boxes and of the parts of their shapes. */
 export const STROKE_WIDTH = 2;
@@ -254,7 +318,7 @@ const PERSON_RADIUS = 48; // corners of the body of a person, rounder than Excal
 export const corners = (value: number): Roundness => ({ type: 3, value });
 
 /** How the box itself is drawn: the outline of a rounded box, else invisible, with its parts drawing the shape behind it. */
-export function boxStyle(e: Pick<C4Element, "kind" | "type" | "external">): { roundness: Roundness; strokeColor: string; backgroundColor: string } {
+export function boxStyle(e: Pick<C4Element, "kind" | "type" | "external" | "look">): { roundness: Roundness; strokeColor: string; backgroundColor: string } {
   const look = lookOf(e);
   const shape = shapeOf(e);
   if (shape === "rounded") return { roundness: corners(RADIUS), strokeColor: look.stroke, backgroundColor: look.background };
@@ -350,12 +414,12 @@ export function shapeParts(shape: Shape, b: Box): Part[] {
         { type: "rectangle", box: { x, y: y + TAB, width: w, height: h - TAB }, round: SMALL_RADIUS, stroke: "outline", fill: "body" },
       ];
     case "browser": {
-      // A window with a bar along the top, holding three dots and an address field.
+      // A window with a bar along the top in the text color, which shows on the fill, holding three dots and an address field.
       const dot = 8;
       const field = x + 8 + 3 * (dot + 5) + 4;
       return [
         { type: "rectangle", box: b, stroke: "outline", fill: "body" },
-        { type: "rectangle", box: { x, y, width: w, height: BAR }, stroke: "outline", fill: "outline" },
+        { type: "rectangle", box: { x, y, width: w, height: BAR }, stroke: "outline", fill: "detail" },
         ...[0, 1, 2].map((i): Part => ({
           type: "ellipse", box: { x: x + 8 + i * (dot + 5), y: y + BAR / 2 - dot / 2, width: dot, height: dot }, stroke: "body", fill: "body",
         })),
@@ -386,7 +450,7 @@ export const partOf = (customData: Record<string, unknown> | undefined): string 
 };
 
 /** Version of the shapes, kept on their parts: parts drawn by an earlier one are drawn again. */
-export const SHAPE_VERSION = 6;
+export const SHAPE_VERSION = 7;
 
 export const shapeVersionOf = (customData: Record<string, unknown> | undefined): number => {
   const v = (customData?.[KEY] as { shape?: unknown } | undefined)?.shape;

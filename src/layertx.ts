@@ -29,7 +29,8 @@ export function selectionOf(els: readonly El[], ids: string[]): Pick<AppState, "
 export function readStore(els: readonly El[]): C4Store {
   const carrier = findCarrier(els);
   const s = carrier ? storeData(carrier.customData) : null;
-  return { current: s?.current ?? CONTEXT, views: { [CONTEXT]: null, ...(s?.views ?? {}) }, hidden: s?.hidden ?? {} };
+  const theme = typeof s?.theme === "string" && s.theme ? { theme: s.theme } : {};
+  return { current: s?.current ?? CONTEXT, views: { [CONTEXT]: null, ...(s?.views ?? {}) }, hidden: s?.hidden ?? {}, ...theme };
 }
 
 /** The index of every layer of a drawing, read from its scene, and the layer on the canvas. */
@@ -196,7 +197,7 @@ export class LayerTx {
     this.tx = new SceneTx(view);
     this.carrier = findCarrier(this.tx.live());
     const s = readStore(this.tx.live());
-    this.store = { current: s.current, views: { ...s.views }, hidden: {} };
+    this.store = { current: s.current, views: { ...s.views }, hidden: {}, theme: s.theme };
     for (const [layer, els] of Object.entries(s.hidden)) this.hidden.set(layer, new Map((els as El[]).map((e) => [e.id, e])));
   }
 
@@ -206,6 +207,17 @@ export class LayerTx {
 
   get current(): DiagramId {
     return this.store.current;
+  }
+
+  /** The drawing's theme, if it has one yet. */
+  get theme(): string | undefined {
+    return this.store.theme;
+  }
+
+  setTheme(theme: string) {
+    if (theme === this.store.theme) return;
+    this.store.theme = theme;
+    this.dirty = true;
   }
 
   hasLayer(layer: DiagramId): boolean {
@@ -304,7 +316,7 @@ export class LayerTx {
   private storeValue(): C4Store {
     const hidden: Record<string, El[]> = {};
     for (const [layer, m] of this.hidden) if (layer !== this.current) hidden[layer] = [...m.values()].filter((e) => !e.isDeleted);
-    return { current: this.current, views: this.store.views, hidden };
+    return { current: this.current, views: this.store.views, hidden, ...(this.store.theme ? { theme: this.store.theme } : {}) };
   }
 
   /** The carrier with the store, at the top left of the layer on the canvas so it never widens an export. */

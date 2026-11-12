@@ -1,14 +1,22 @@
-import { App, ItemView, Modal, Notice, Plugin, PluginSettingTab, Setting, SettingDefinitionItem, setIcon } from "obsidian";
+import {
+  App, ColorComponent, FuzzySuggestModal, ItemView, Menu, Modal, Notice, Plugin, PluginSettingTab, Setting, SettingDefinitionItem, SettingDefinitionPage,
+  normalizePath, setIcon,
+} from "obsidian";
 import {
   Selected, SelectedRelationship, addElement, addRelationship, canAdd, canEdit, canRelate, deleteBelow, diagramInfo, dropBoxes, isRelationship, itemAt, itemOf, reverseRelationship,
-  onlyC4Selected, selectNext, selectedElements, selectedItem, selectionShapes, updateElement, updateRelationship, zoomIn, zoomOut,
+  onlyC4Selected, refreshLooks, setDrawingTheme, themeOfDrawing, useDrawingColors, selectNext, selectedElements, selectedItem, selectionShapes, updateElement, updateRelationship, zoomIn, zoomOut,
 } from "./actions";
 import { Guard, guardLevels, protectStore, refreshCanvas, selectionOf } from "./layertx";
 import { AppState, El, ExcalidrawAPI, ExcalidrawView, VIEW_TYPE_EXCALIDRAW, isExcalidrawView } from "./excalidraw";
 import {
   C4Kind, CONTAINER_TYPES, CONTAINER_TYPE_TITLES, ContainerType, Ink, KINDS, Shape, Vec, boundaryData, bounds, canBeExternal, cleanMetadata, elementData, hasTechnology,
-  isContainerType, kindTitle, levelOf, shapeDrawing, shapeOf, zoomView,
+  isContainerType, kindTitle, levelOf, shapeDrawing, shapeOf, zoomView, LOOK_KEYS, LOOK_KEY_TITLES, LOOK_PARTS, LOOK_PART_TITLES, Look, LookKey,
+  lookOf, ownLook,
 } from "./model";
+import {
+  CUSTOM_THEME, Colors, Theme, UserTheme, colorsOf, copyColors, isPreset, mergeColors, newThemeId, parseThemes, setNewDrawingTheme, setUserThemes,
+  themeName, themeOptions, themeSwatches, themesToJson, uniqueName, validTheme,
+} from "./themes";
 import { C4Panel, PANEL_POSITIONS, PanelPosition, isPanelPosition } from "./panel";
 import { Highlight } from "./highlight";
 import { DEFAULT_SHORTCUTS, SHORTCUT_ACTIONS, SHORTCUT_NAMES, ShortcutAction, Shortcuts, actionOf, isMove, loadShortcuts, shortcutOf } from "./keys";
@@ -19,9 +27,28 @@ interface Settings {
   showPanel: boolean;
   panelPosition: PanelPosition;
   shortcuts: Shortcuts;
+  theme: Theme; // of new drawings
+  themes: UserTheme[]; // the user's own, after the built-in ones
 }
 
-const DEFAULT_SETTINGS: Settings = { showPanel: true, panelPosition: "right", shortcuts: DEFAULT_SHORTCUTS };
+const DEFAULT_SETTINGS: Settings = { showPanel: true, panelPosition: "right", shortcuts: DEFAULT_SHORTCUTS, theme: "classic", themes: [] };
+
+/**
+ * The themes from saved settings, their colors over the defaults. The colors the settings had before themes, if any
+ * were changed, become the Custom theme.
+ */
+function loadThemes(saved: (Partial<Settings> & { looks?: unknown }) | null): UserTheme[] {
+  const out: UserTheme[] = [];
+  const looks = saved?.looks;
+  const list: unknown[] = Array.isArray(saved?.themes)
+    ? saved.themes
+    : looks && typeof looks === "object" && Object.keys(looks).length ? [{ id: CUSTOM_THEME, name: "Custom", colors: looks }] : [];
+  for (const t of list as Partial<UserTheme>[]) {
+    if (!t || typeof t.id !== "string" || !t.id || isPreset(t.id) || out.some((x) => x.id === t.id)) continue;
+    out.push({ id: t.id, name: typeof t.name === "string" && t.name.trim() ? t.name : "Theme", colors: mergeColors(t.colors) });
+  }
+  return out;
+}
 
 interface ViewState {
   view: ExcalidrawView;
@@ -50,6 +77,11 @@ export default class ExcalidrawC4Plugin extends Plugin {
     const saved = (await this.loadData()) as Partial<Settings> | null;
     this.settings = { ...DEFAULT_SETTINGS, ...saved, shortcuts: loadShortcuts(saved?.shortcuts) };
     if (!isPanelPosition(this.settings.panelPosition)) this.settings.panelPosition = DEFAULT_SETTINGS.panelPosition;
+    this.settings.themes = loadThemes(saved);
+    const migrated = !Array.isArray(saved?.themes) && this.settings.themes.some((t) => t.id === CUSTOM_THEME);
+    this.settings.theme = validTheme(migrated ? CUSTOM_THEME : this.settings.theme, this.settings.themes);
+    delete (this.settings as { looks?: unknown }).looks;
+    this.applyThemes();
     this.addSettingTab(new C4SettingTab(this.app, this));
 
     this.registerEvent(this.app.workspace.on("layout-change", () => this.syncViews()));
@@ -79,6 +111,11 @@ export default class ExcalidrawC4Plugin extends Plugin {
       name: "Add relationship between the two selected elements",
       checkCallback: (checking) =>
         this.withView(checking, (view) => this.promptRelationship(view), (view) => !!selectedPair(view)),
+    });
+    this.addCommand({
+      id: "change-theme",
+      name: "Change theme of the drawing",
+      checkCallback: (checking) => this.withView(checking, (view) => this.chooseTheme(view)),
     });
     this.addCommand({
       id: "edit-selected",
@@ -264,6 +301,7 @@ export default class ExcalidrawC4Plugin extends Plugin {
 
   onunload() {
     window.clearTimeout(this.retryTimer);
+    window.clearTimeout(this.looksTimer);
     for (const s of this.states.values()) this.detach(s);
     this.states.clear();
   }
@@ -271,6 +309,23 @@ export default class ExcalidrawC4Plugin extends Plugin {
   async saveSettings() {
     await this.saveData(this.settings);
     for (const s of this.states.values()) this.refreshPanel(s);
+  }
+
+  private looksTimer = 0;
+
+  private applyThemes() {
+    setUserThemes(this.settings.themes);
+    setNewDrawingTheme(this.settings.theme);
+  }
+
+  /** Saves the themes, and soon after draws the open drawings in their colors. */
+  async saveThemes() {
+    this.applyThemes();
+    await this.saveData(this.settings);
+    window.clearTimeout(this.looksTimer);
+    this.looksTimer = window.setTimeout(() => {
+      for (const s of this.states.values()) if (!s.api.getAppState().viewModeEnabled) refreshLooks(s.view);
+    }, 300);
   }
 
   /** Docks a panel on every open drawing and removes the ones of closed drawings. */
@@ -313,6 +368,7 @@ export default class ExcalidrawC4Plugin extends Plugin {
       reverse: () => this.reverse(view),
       zoomIn: () => this.zoomIn(view),
       zoomOut: () => this.zoomOut(view),
+      theme: (at) => this.themeMenu(view, at),
     });
     const highlight = new Highlight();
     const s: ViewState = { view, api, panel, highlight, raf: 0, highlightRaf: 0, selection: null, viewMode: undefined, revision: NaN };
@@ -320,6 +376,8 @@ export default class ExcalidrawC4Plugin extends Plugin {
     highlight.mount(view.contentEl);
     s.unsubscribe = api.onChange?.((els, appState) => this.onSceneChange(s, els, appState));
     this.states.set(view, s);
+    // Drawn in the colors of the types of element now, which may have changed since the drawing was last open.
+    if (!api.getAppState().viewModeEnabled) refreshLooks(view);
     this.refreshPanel(s);
     this.checkCanvas(s);
   }
@@ -439,27 +497,65 @@ export default class ExcalidrawC4Plugin extends Plugin {
     else this.promptEditElement(view, item);
   }
 
+  /** Lets the user pick the drawing's theme. */
+  private chooseTheme(view: ExcalidrawView) {
+    new ThemeModal(this.app, themeOfDrawing(view), (t) => {
+      if (!setDrawingTheme(view, t)) new Notice(NO_EXCALIDRAW);
+    }).open();
+  }
+
+  /** The themes as a menu at the panel's button, the drawing's one checked. */
+  private themeMenu(view: ExcalidrawView, at: HTMLElement) {
+    const menu = new Menu();
+    menu.addItem((i) => i.setTitle("Theme of the drawing").setIsLabel(true));
+    const current = themeOfDrawing(view);
+    const options = themeOptions();
+    options.forEach((t, i) => {
+      if (t.user && !options[i - 1]?.user) menu.addSeparator();
+      menu.addItem((item) => item.setTitle(themeTitle(t.id)).setChecked(t.id === current).onClick(() => {
+        if (!setDrawingTheme(view, t.id)) new Notice(NO_EXCALIDRAW);
+      }));
+    });
+    const r = at.getBoundingClientRect();
+    menu.showAtPosition({ x: r.left, y: r.bottom }, at.doc);
+  }
+
   private promptEditElement(view: ExcalidrawView, { el, data }: Selected) {
+    useDrawingColors(view); // the colors the form shows
     let external = !!data.external;
     let type: ContainerType = isContainerType(data.type) ? data.type : "generic";
     const heading = () => `Edit ${kindTitle(data.kind, external).toLowerCase()}`;
     const values = { name: data.name, technology: data.technology ?? "", description: data.description ?? "" };
     const fields = elementFields(data.kind, external).map((f) => ({ ...f, value: values[f.key as keyof typeof values] }));
     const rows: [string, string][] = Object.entries(data.metadata ?? {});
+    let look: Partial<Look> = { ...data.look };
+    const typed = () => ({ kind: data.kind, ...(data.kind === "container" ? { type } : {}), external });
     const modal = new FormModal(this.app, heading(), fields, (v) => {
       const technology = hasTechnology(data.kind) ? v.technology : undefined;
       const metadata = cleanMetadata(rows);
+      useDrawingColors(view); // for its own colors, those that differ from its type's in the drawing's theme
       const updated = updateElement(view, el.id, {
-        ...data, ...(data.kind === "container" ? { type } : {}), external, name: v.name ?? "", technology, description: v.description, metadata,
+        ...data, ...typed(), name: v.name ?? "", technology, description: v.description, metadata, look: ownLook(typed(), look),
       });
       if (!updated) new Notice(NO_EXCALIDRAW);
     }, "Save");
-    if (data.kind === "container") modal.before.push(typeToggle(() => type, (t) => (type = t)));
+    const colors = lookPickers(
+      "Colors", "",
+      () => lookOf({ ...typed(), look }),
+      (part, value) => (look = { ...look, [part]: value }),
+      () => (look = {}),
+    );
+    if (data.kind === "container") modal.before.push(typeToggle(() => type, (t) => {
+      type = t;
+      colors.refresh();
+    }));
     // Containers and components are external as their system is.
     if (canBeExternal(data.kind)) modal.extras.push(externalToggle(() => external, (on) => {
       external = on;
       modal.setTitle(heading());
+      colors.refresh();
     }));
+    modal.extras.push(colors.render);
     modal.extras.push(metadataEditor(rows, () => modal.submit()));
     modal.open();
   }
@@ -624,6 +720,34 @@ function shapePicture(el: HTMLElement, shape: Shape) {
   }
 }
 
+/**
+ * Color pickers for the outline, fill and text of an element or a type of element, each named, and a button resetting
+ * them to their defaults. `render` adds them to a form as a setting of their own; `into` to a given setting.
+ */
+function lookPickers(
+  name: string, desc: string, get: () => Look, set: (part: keyof Look, value: string) => void, reset: () => void,
+) {
+  const pickers: Partial<Record<keyof Look, ColorComponent>> = {};
+  const refresh = () => {
+    const look = get();
+    for (const p of LOOK_PARTS) pickers[p]?.setValue(look[p]);
+  };
+  const into = (setting: Setting) => {
+    setting.setClass("c4-look");
+    for (const p of LOOK_PARTS) {
+      const field = setting.controlEl.createEl("label", { cls: "c4-look-color" });
+      field.createSpan({ text: LOOK_PART_TITLES[p] });
+      pickers[p] = new ColorComponent(field).setValue(get()[p]).onChange((v) => set(p, v));
+    }
+    setting.addExtraButton((x) => x.setIcon("rotate-ccw").setTooltip("Reset").onClick(() => {
+      reset();
+      refresh();
+    }));
+  };
+  const render = (el: HTMLElement) => into(new Setting(el).setName(name).setDesc(desc).setClass("c4-field"));
+  return { into, render, refresh };
+}
+
 /** The form setting that makes an element external: outside the system being described, drawn in grey. */
 const externalToggle = (get: () => boolean, set: (on: boolean) => void) => (el: HTMLElement) => {
   new Setting(el)
@@ -719,12 +843,28 @@ class C4SettingTab extends PluginSettingTab {
     const settings = this.plugin.settings;
     if (key === "showPanel") settings.showPanel = !!value;
     else if (key === "panelPosition" && isPanelPosition(value)) settings.panelPosition = value;
+    else if (key === "theme") {
+      settings.theme = validTheme(value, settings.themes);
+      return this.plugin.saveThemes();
+    }
     await this.plugin.saveSettings();
   }
 
   getSettingDefinitions(): SettingDefinitionItem[] {
     return [
       ...this.general(),
+      {
+        name: "Theme of new drawings",
+        desc: "The colors of a drawing: a built-in theme or one of your own. Each drawing keeps its own, changed from the panel's theme menu or the command palette.",
+        control: { type: "dropdown", key: "theme", options: Object.fromEntries(themeOptions().map((t) => [t.id, t.name])) },
+      },
+      {
+        type: "page",
+        name: "Themes",
+        desc: "Your own themes, which the theme menu offers after the built-in ones. Add, edit, import and export them.",
+        displayValue: () => String(this.plugin.settings.themes.length),
+        items: [this.themeList(), this.themeTransfer()],
+      },
       {
         type: "group",
         heading: "Keyboard shortcuts",
@@ -781,6 +921,185 @@ class C4SettingTab extends PluginSettingTab {
     return () => stop?.();
   }
 
+  private async saveAndUpdate() {
+    await this.plugin.saveThemes();
+    this.update();
+  }
+
+  /** The user's themes, each a page of its colors. */
+  private themeList(): SettingDefinitionItem {
+    const themes = this.plugin.settings.themes;
+    return {
+      type: "list",
+      heading: "Your themes",
+      emptyState: "No themes of your own. Add one, starting from any theme, or import one.",
+      items: themes.map((t) => this.themePage(t)),
+      onReorder: (from, to) => {
+        themes.splice(to, 0, ...themes.splice(from, 1));
+        void this.saveAndUpdate();
+      },
+      addItem: { name: "Add theme", action: (el) => this.chooseStart(el) },
+    };
+  }
+
+  /** Lets the user pick the theme a new one starts as a copy of. */
+  private chooseStart(el: HTMLElement) {
+    const menu = new Menu();
+    menu.addItem((i) => i.setTitle("Start from").setIsLabel(true));
+    const options = themeOptions();
+    options.forEach((t, i) => {
+      if (t.user && !options[i - 1]?.user) menu.addSeparator();
+      menu.addItem((item) => item.setTitle(themeTitle(t.id)).onClick(() => this.addThemes([{ name: `${t.name} copy`, colors: copyColors(t.id) }])));
+    });
+    const r = el.getBoundingClientRect();
+    menu.showAtPosition({ x: r.left, y: r.bottom }, el.doc);
+  }
+
+  /** Adds themes with new ids, renamed when another theme has their name. */
+  private addThemes(added: { name: string; colors: Colors }[]) {
+    const themes = this.plugin.settings.themes;
+    for (const t of added) {
+      themes.push({ id: newThemeId(themes.map((x) => x.id)), name: uniqueName(t.name, themes.map((x) => x.name)), colors: t.colors });
+    }
+    void this.saveAndUpdate();
+  }
+
+  /** Deletes the theme after asking, and leaves its page. */
+  private deleteTheme(t: UserTheme) {
+    new ConfirmModal(this.app, `Delete theme ${t.name}?`, "Drawings with this theme get the Classic colors.", "Delete", () => {
+      const settings = this.plugin.settings;
+      settings.themes = settings.themes.filter((x) => x !== t);
+      settings.theme = validTheme(settings.theme, settings.themes);
+      void this.plugin.saveThemes().then(() => {
+        // Obsidian has no public way back from a page; without it, the emptied page stays until the user goes back.
+        (this as unknown as { setting?: { closePage?: () => void } }).setting?.closePage?.();
+        this.update();
+      });
+    }).open();
+  }
+
+  /** A theme's page: renaming and deleting it, then the colors of each type of element. */
+  private themePage(t: UserTheme): SettingDefinitionPage {
+    const page: SettingDefinitionPage & { id: string } = {
+      type: "page",
+      id: t.id, // Obsidian finds the open page by its id, the name by default, so renaming the theme keeps the page open
+      name: t.name,
+      desc: t.id === this.plugin.settings.theme ? "New drawings get this theme." : undefined,
+      items: [
+        {
+          type: "group",
+          items: [
+            {
+              name: "Rename",
+              desc: `Called ${t.name}.`,
+              action: () => new RenameModal(this.app, t.name, (name) => {
+                t.name = name;
+                void this.saveAndUpdate();
+              }).open(),
+            },
+            { name: "Delete theme", desc: "Drawings with this theme get the Classic colors.", action: () => this.deleteTheme(t) },
+          ],
+        },
+        {
+          type: "group",
+          heading: "Colors",
+          items: LOOK_KEYS.map((k) => ({ name: LOOK_KEY_TITLES[k], render: (setting: Setting) => this.lookSetting(setting, t, k) })),
+        },
+        {
+          name: "Reset colors to defaults",
+          desc: "Restores the Classic colors of every type of element.",
+          action: () => {
+            t.colors = copyColors("classic");
+            void this.saveAndUpdate();
+          },
+        },
+      ],
+    };
+    return page;
+  }
+
+  /** The colors of a type of element in a theme: a picker for each, and a button restoring the Classic ones. */
+  private lookSetting(setting: Setting, theme: UserTheme, key: LookKey) {
+    lookPickers(
+      "", "",
+      () => theme.colors[key],
+      (part, value) => {
+        theme.colors[key] = { ...theme.colors[key], [part]: value };
+        void this.plugin.saveThemes();
+      },
+      () => {
+        theme.colors[key] = { ...colorsOf("classic")[key] };
+        void this.plugin.saveThemes();
+      },
+    ).into(setting);
+  }
+
+  /** Importing themes from the clipboard or a file, and exporting all of them. */
+  private themeTransfer(): SettingDefinitionItem {
+    const themes = this.plugin.settings.themes;
+    return {
+      type: "group",
+      heading: "Import and export",
+      items: [
+        { name: "Import from the clipboard", desc: "Themes copied as JSON from another vault, or shared with you.", action: () => void this.importFromClipboard() },
+        { name: "Import from a file", desc: "A JSON file of themes saved from another vault, or shared with you.", action: () => this.importFromFile() },
+        { name: "Export to the clipboard", desc: "All your themes as JSON.", disabled: () => !themes.length, action: () => void this.copyThemes(themes) },
+        {
+          name: "Export as a file in the vault", desc: "All your themes as a JSON file at the root of the vault.", disabled: () => !themes.length,
+          action: () => void this.saveThemesFile(themes, "C4 themes"),
+        },
+      ],
+    };
+  }
+
+  private async copyThemes(themes: UserTheme[]) {
+    try {
+      await navigator.clipboard.writeText(themesToJson(themes));
+    } catch {
+      return void new Notice("Can't write to the clipboard.");
+    }
+    new Notice(`${themes.length} ${themes.length === 1 ? "theme" : "themes"} copied to the clipboard.`);
+  }
+
+  /** Saves the themes as a JSON file at the root of the vault, numbered when the name is taken. */
+  private async saveThemesFile(themes: UserTheme[], name: string) {
+    const vault = this.app.vault;
+    let path = normalizePath(`${name}.json`);
+    for (let i = 2; vault.getAbstractFileByPath(path); i++) path = normalizePath(`${name} ${i}.json`);
+    try {
+      await vault.create(path, themesToJson(themes));
+    } catch {
+      return void new Notice(`Can't save ${path}.`);
+    }
+    new Notice(`Saved to ${path}.`);
+  }
+
+  private importThemes(text: string) {
+    const found = parseThemes(text);
+    if (!found) return void new Notice("No themes to import.");
+    this.addThemes(found);
+    new Notice(found.length === 1 ? `Theme ${found[0].name} imported.` : `${found.length} themes imported.`);
+  }
+
+  private async importFromClipboard() {
+    let text = "";
+    try {
+      text = await navigator.clipboard.readText();
+    } catch {
+      return void new Notice("Can't read the clipboard.");
+    }
+    this.importThemes(text);
+  }
+
+  private importFromFile() {
+    const input = createEl("input", { attr: { type: "file", accept: ".json,application/json" } });
+    input.addEventListener("change", () => {
+      const file = input.files?.[0];
+      if (file) void file.text().then((text) => this.importThemes(text));
+    });
+    input.click();
+  }
+
   private general(): SettingDefinitionItem[] {
     return [
       {
@@ -794,6 +1113,86 @@ class C4SettingTab extends PluginSettingTab {
         control: { type: "dropdown", key: "panelPosition", options: PANEL_POSITIONS },
       },
     ];
+  }
+}
+
+/** A theme's name after a few of its colors: of a person, a system, a container and a component. */
+function themeTitle(t: Theme): DocumentFragment {
+  return createFragment((f) => {
+    const swatches = f.createSpan({ cls: "c4-swatches" });
+    for (const color of themeSwatches(t)) swatches.createSpan({ cls: "c4-swatch" }).setCssProps({ "--c4-swatch": color });
+    f.appendText(themeName(t) ?? "Missing theme");
+  });
+}
+
+/** Picks a theme by name. */
+class ThemeModal extends FuzzySuggestModal<{ id: Theme; name: string }> {
+  constructor(app: App, private readonly current: Theme, private readonly choose: (t: Theme) => void) {
+    super(app);
+    this.setPlaceholder("Theme of the drawing");
+  }
+
+  getItems(): { id: Theme; name: string }[] {
+    return themeOptions();
+  }
+
+  getItemText(t: { id: Theme; name: string }): string {
+    return t.id === this.current ? `${t.name} (current)` : t.name;
+  }
+
+  onChooseItem(t: { id: Theme; name: string }) {
+    this.choose(t.id);
+  }
+}
+
+/** Asks before doing something that can't be undone. */
+class ConfirmModal extends Modal {
+  constructor(app: App, private readonly heading: string, private readonly text: string, private readonly confirm: string, private readonly onConfirm: () => void) {
+    super(app);
+  }
+
+  onOpen() {
+    this.setTitle(this.heading);
+    this.contentEl.createEl("p", { text: this.text });
+    new Setting(this.contentEl)
+      .addButton((b) => b.setButtonText("Cancel").onClick(() => this.close()))
+      .addButton((b) => b.setButtonText(this.confirm).setDestructive().setCta().onClick(() => {
+        this.close();
+        this.onConfirm();
+      }));
+  }
+
+  onClose() {
+    this.contentEl.empty();
+  }
+}
+
+/** Asks for a new name for a theme. */
+class RenameModal extends Modal {
+  constructor(app: App, private readonly name: string, private readonly rename: (name: string) => void) {
+    super(app);
+  }
+
+  onOpen() {
+    this.setTitle("Rename theme");
+    let value = this.name;
+    const submit = () => {
+      if (!value.trim()) return;
+      this.rename(value.trim());
+      this.close();
+    };
+    new Setting(this.contentEl).setName("Name").addText((t) => {
+      t.setValue(value).onChange((v) => (value = v));
+      t.inputEl.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") submit();
+      });
+      window.setTimeout(() => t.inputEl.select(), 0);
+    });
+    new Setting(this.contentEl).addButton((b) => b.setButtonText("Rename").setCta().onClick(submit));
+  }
+
+  onClose() {
+    this.contentEl.empty();
   }
 }
 

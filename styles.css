@@ -275,3 +275,32 @@ body .modal .modal-header-button.c4-modal-action {
   text-anchor: middle;
   dominant-baseline: central;
 }
+
+/* The colors of an element or a type of element: a named color picker for its outline, fill and text. */
+.c4-look .setting-item-control {
+  gap: 12px;
+}
+
+.c4-look-color {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+/* A few colors of a theme before its name, in the theme menus. */
+.c4-swatches {
+  display: inline-flex;
+  gap: 2px;
+  margin-inline-end: 8px;
+  vertical-align: middle;
+}
+
+.c4-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background-color: var(--c4-swatch);
+  border: 1px solid var(--background-modifier-border);
+}

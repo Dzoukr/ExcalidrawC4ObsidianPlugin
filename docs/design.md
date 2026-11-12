@@ -16,13 +16,25 @@ Box text follows the C4 convention: name, `[Kind: technology]`, blank line, desc
 
 ### Shapes
 
-The shapes follow the key of the diagrams on c4model.com, white with the outline and text in one color: blue, grey for external elements. Only containers have a `type`, chosen in their form from a row of buttons with a picture of each shape (arrow keys move along it), which gives their shape: **generic** a rounded box (also without a type), **server-side app** a rounded box with a `>_` prompt in its top left corner, **single-page app** a browser window, **database** a cylinder, **storage** a bucket, **directory** a folder. A person has a head in front of the top of a body rounder than Excalidraw rounds a rectangle (a quarter of its height at most), so both are parts, a component the two small boxes of the UML symbol. Every kind and type has the same colors for now.
+The shapes follow the key of the diagrams on c4model.com, in the Classic theme white with the outline and text in one color: blue, grey for external elements (see Colors and themes). Only containers have a `type`, chosen in their form from a row of buttons with a picture of each shape (arrow keys move along it), which gives their shape: **generic** a rounded box (also without a type), **server-side app** a rounded box with a `>_` prompt in its top left corner, **single-page app** a browser window, **database** a cylinder, **storage** a bucket, **directory** a folder. A person has a head in front of the top of a body rounder than Excalidraw rounds a rectangle (a quarter of its height at most), so both are parts, a component the two small boxes of the UML symbol. Every kind and type has the same colors for now.
 
 The box carrying the data and the text stays a rectangle, as Excalidraw only puts text in a rectangle, ellipse or diamond, and relationships are glued to it. Where it is no rectangle shape it is invisible, and the shape is drawn by **parts** behind it (`customData.c4.part`: the id of the box), grouped with the box and its text so they are selected, moved and deleted together. The plugin draws the parts again whenever it changes the box, moves them with it, ghosts them with it, guards them with it, and on its next change to the drawing redraws boxes drawn before their shape or look was what it is now: the parts keep the version of the shapes (`customData.c4.shape`).
 
 The name of an element is larger than the rest of its box's text, as in the C4 model's diagrams. Excalidraw draws a text in one size, so the name is a text of its own, also a part, over room the box's text keeps for it at the top: lines holding only a zero-width space, which nothing trims away.
 
 Only people and systems, the elements of the system context, say whether they are external. Containers and components are external as their system is: the form does not offer it, and making a system external or internal does the same to everything inside it.
+
+### Colors and themes
+
+Every type of element has its colors, an outline, a fill and a text color: a person, a software system, each type of container, a component, and one set for all external elements. A **theme** gives them all, as in the mind map plugin:
+
+- Built-in themes: **Classic** (the key of the C4 model's diagrams: blue on white, grey for external elements), **Filled** (the well-known filled C4 boxes, dark to light blue down the levels), **Pastel** (a color for each kind and type of container), **Ocean**, **Sunset**, **Forest** and **Monochrome**.
+- The user's own themes, on the settings' Themes page: each started as a copy of any theme, renamed, deleted, its colors edited type by type, reordered; imported and exported as JSON through the clipboard or a file. Colors missing from an imported theme are the Classic ones. The colors the settings had before themes became the Custom theme.
+- **Each drawing keeps its theme** (`theme` in the store on the carrier). A drawing takes the theme of new drawings, a setting, with its first C4 element; it is changed from the panel's theme menu or the command palette. A drawing whose theme was deleted has the Classic colors.
+
+An element can have colors of its own, set in its edit form, over those of its type in the drawing's theme: only the ones that differ are kept (`look` in its data), and the form resets them to its type's.
+
+The parts of a shape keep the colors they were drawn in (`customData.c4.look`). Whenever the plugin changes a drawing, and when one opens, the boxes drawn in other colors than theirs now are drawn again in theirs, keeping their size; after a theme or its colors change, the open drawings are drawn again.
 
 ## Done (0.1.0)
 
@@ -114,8 +126,7 @@ Deleting a relationship between two elements deletes, in the other layers, every
 
 ## Next
 
-1. **Colors per type**: settings for the look of each kind and container type.
-2. **Checks**: relationships one level up that no relationship below accounts for; elements missing from their home diagram.
-3. **Legend**: a generated key of the kinds and arrows used in the drawing.
-4. **Keyboard workflow**, as in the mind map plugin: add a container under the selection, connect it with the selection, etc.
-5. **Import and export**: Structurizr DSL or C4-PlantUML.
+1. **Checks**: relationships one level up that no relationship below accounts for; elements missing from their home diagram.
+2. **Legend**: a generated key of the kinds and arrows used in the drawing.
+3. **Keyboard workflow**, as in the mind map plugin: add a container under the selection, connect it with the selection, etc.
+4. **Import and export**: Structurizr DSL or C4-PlantUML.

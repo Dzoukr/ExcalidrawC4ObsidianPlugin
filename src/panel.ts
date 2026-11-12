@@ -8,6 +8,7 @@ export interface PanelActions {
   reverse: () => void;
   zoomIn: () => void;
   zoomOut: () => void;
+  theme: (at: HTMLElement) => void; // shows the themes at the button
 }
 
 export interface PanelState {
@@ -29,7 +30,7 @@ export const isPanelPosition = (p: unknown): p is PanelPosition => typeof p === 
 
 const ICONS: Record<C4Kind, string> = { person: "user", system: "box", container: "container", component: "component" };
 
-type Key = C4Kind | "relate" | "edit" | "reverse" | "zoomIn" | "zoomOut";
+type Key = C4Kind | "relate" | "edit" | "reverse" | "zoomIn" | "zoomOut" | "theme";
 
 /** Floating control bar docked on an Excalidraw view: add elements, connect and edit the selection. */
 export class C4Panel {
@@ -45,14 +46,14 @@ export class C4Panel {
     // The layer on the canvas: the others are out of sight.
     this.title = this.el.createDiv({ cls: "c4-title" });
     const group = () => this.el.createDiv({ cls: "c4-group" });
-    const button = (g: HTMLElement, key: Key, icon: string, label: string, fn: () => void) => {
+    const button = (g: HTMLElement, key: Key, icon: string, label: string, fn: (b: HTMLButtonElement) => void) => {
       const b = g.createEl("button", { cls: "c4-btn clickable-icon", attr: { "aria-label": label } });
       setIcon(b, icon);
       // Keep focus on the canvas so Excalidraw's keys keep working.
       b.addEventListener("mousedown", (e) => e.preventDefault());
       b.addEventListener("click", (e) => {
         e.preventDefault();
-        fn();
+        fn(b);
       });
       this.buttons.set(key, b);
     };
@@ -65,6 +66,7 @@ export class C4Panel {
     const zoom = group();
     button(zoom, "zoomIn", "zoom-in", "Zoom into the selected system or container", a.zoomIn);
     button(zoom, "zoomOut", "zoom-out", "Zoom out", a.zoomOut);
+    button(group(), "theme", "palette", "Theme of the drawing", (b) => a.theme(b));
   }
 
   mount(parent: HTMLElement) {
