@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Scene, endsOf, grid, guarded, levelsUpTo, relationshipsWithin, markPatches, misplaced, nextSlot, row, unrelated } from "../src/layers.ts";
+import { Scene, copiesOf, endsOf, grid, guarded, levelsUpTo, relationshipsWithin, markPatches, misplaced, nextSlot, row, unrelated } from "../src/layers.ts";
 import { BOUNDARY_LABEL, BOUNDARY_PAD, CONTEXT, ELEMENT_WIDTH, KEY, MIN_HEIGHT, MISPLACED_LOOK, allowedKinds, canBeExternal, lookOf, parentKind, fittedBoundary, isGhost, makeWay, overlaps, parentFor, pushOut, storeData, wayBack, zoomView } from "../src/model.ts";
 import { ghostId, ghostTextId, ghostsFor } from "../src/ghosts.ts";
 import type { C4Element, ViewKind } from "../src/model.ts";
@@ -385,4 +385,23 @@ test("a relationship stands for the ones below between the same elements or anyt
   assert.deepEqual(relationshipsWithin(scene, "s", "m", CONTEXT).map((a) => a.id), ["out"]);
   assert.deepEqual(relationshipsWithin(scene, "s", "u", CONTEXT), []); // the other way round is another relationship
   assert.deepEqual(relationshipsWithin(scene, "u", "w", "s"), []); // not up a level
+});
+
+test("a relationship's copies are the same relationship up or down a level, saying the same", () => {
+  const says = (a: El, description: string): El => ({ ...a, customData: { [KEY]: { relationship: true, description } } });
+  const tag = { [KEY]: { boundary: "s" } };
+  const scene = sceneOf({
+    [CONTEXT]: context, // a1: user → shop, "Uses"
+    s: [
+      { ...base, id: "sb", type: "rectangle", customData: tag },
+      ...shop.filter((e) => e.id !== "a3"),
+      arrow("a3", "user2", "web"), // user → web app, "Uses": a copy
+      says(arrow("a4", "user2", "api"), "Calls"), // user → API, says something else
+      arrow("back", "web", "user2"), // the other way round
+      arrow("carried", "user2", "sb"), // user → the shop's boundary, "Uses": a copy
+    ],
+  });
+  assert.deepEqual(copiesOf(scene, scene.byId.get("a1")!).map((a) => a.id).sort(), ["a3", "carried"]);
+  assert.deepEqual(copiesOf(scene, scene.byId.get("a3")!).map((a) => a.id), ["a1"]); // up a level, not in its own layer
+  assert.deepEqual(copiesOf(scene, scene.byId.get("a4")!), []);
 });

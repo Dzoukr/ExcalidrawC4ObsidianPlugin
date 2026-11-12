@@ -272,6 +272,29 @@ export function endsOf(scene: Scene, arrow: El): [string, string] | null {
 }
 
 /**
+ * The copies of a relationship in the other layers: the same relationship between the elements standing for its ends
+ * there, up a level or down, with the same description, technology and metadata, as copied from it and not edited
+ * since. One between the same elements that says something else is another relationship.
+ */
+export function copiesOf(scene: Scene, arrow: El): El[] {
+  const ends = endsOf(scene, arrow);
+  const data = relationshipData(arrow.customData);
+  if (!ends || !data) return [];
+  const [a, b] = ends;
+  const same = (d: C4Relationship) =>
+    d.description.trim() === data.description.trim() && (d.technology ?? "").trim() === (data.technology ?? "").trim() &&
+    JSON.stringify(d.metadata ?? {}) === JSON.stringify(data.metadata ?? {});
+  const layer = scene.diagramOf(arrow);
+  return [...scene.byId.values()].filter((x) => {
+    const d = x.containerId ? null : relationshipData(x.customData);
+    const e = d && x.id !== arrow.id && scene.diagramOf(x) !== layer ? endsOf(scene, x) : null;
+    if (!d || !e || !same(d)) return false;
+    const [xa, xb] = e;
+    return (scene.within(a, xa) && scene.within(b, xb)) || (scene.within(xa, a) && scene.within(xb, b));
+  });
+}
+
+/**
  * The relationship arrows of the other layers that a relationship from one element to another stands for: from the
  * element or anything inside it, to the other or anything inside that.
  */

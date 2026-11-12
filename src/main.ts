@@ -1,28 +1,33 @@
 import { App, ItemView, Modal, Notice, Plugin, PluginSettingTab, Setting, SettingDefinitionItem, setIcon } from "obsidian";
 import {
   Selected, SelectedRelationship, addElement, addRelationship, canAdd, canEdit, canRelate, deleteBelow, diagramInfo, dropBoxes, isRelationship, itemAt, itemOf, reverseRelationship,
-  selectedElements, selectedItem, updateElement, updateRelationship, zoomIn, zoomOut,
+  onlyC4Selected, selectNext, selectedElements, selectedItem, selectionShapes, updateElement, updateRelationship, zoomIn, zoomOut,
 } from "./actions";
 import { Guard, guardLevels, protectStore, refreshCanvas } from "./layertx";
 import { AppState, El, ExcalidrawAPI, ExcalidrawView, VIEW_TYPE_EXCALIDRAW, isExcalidrawView } from "./excalidraw";
-import { C4Kind, KINDS, Vec, boundaryData, canBeExternal, cleanMetadata, elementData, hasTechnology, kindTitle, levelOf } from "./model";
+import { C4Kind, KINDS, Vec, boundaryData, canBeExternal, cleanMetadata, elementData, hasTechnology, kindTitle, levelOf, zoomView } from "./model";
 import { C4Panel, PANEL_POSITIONS, PanelPosition, isPanelPosition } from "./panel";
+import { Highlight } from "./highlight";
+import { DEFAULT_SHORTCUTS, SHORTCUT_ACTIONS, SHORTCUT_NAMES, ShortcutAction, Shortcuts, actionOf, isMove, loadShortcuts, shortcutOf } from "./keys";
 
 const NO_EXCALIDRAW = "The Excalidraw plugin's scripting API is not available.";
 
 interface Settings {
   showPanel: boolean;
   panelPosition: PanelPosition;
+  shortcuts: Shortcuts;
 }
 
-const DEFAULT_SETTINGS: Settings = { showPanel: true, panelPosition: "right" };
+const DEFAULT_SETTINGS: Settings = { showPanel: true, panelPosition: "right", shortcuts: DEFAULT_SHORTCUTS };
 
 interface ViewState {
   view: ExcalidrawView;
   api: ExcalidrawAPI;
   panel: C4Panel;
+  highlight: Highlight;
   unsubscribe?: () => void;
   raf: number;
+  highlightRaf: number;
   selection: unknown; // the selection the panel shows, to refresh it only when the selection changes
   viewMode: boolean | undefined;
   drag?: Map<string, Vec>; // where the C4 boxes were when the pointer went down on the drawing, until it goes up
@@ -40,7 +45,7 @@ export default class ExcalidrawC4Plugin extends Plugin {
 
   async onload() {
     const saved = (await this.loadData()) as Partial<Settings> | null;
-    this.settings = { ...DEFAULT_SETTINGS, ...saved };
+    this.settings = { ...DEFAULT_SETTINGS, ...saved, shortcuts: loadShortcuts(saved?.shortcuts) };
     if (!isPanelPosition(this.settings.panelPosition)) this.settings.panelPosition = DEFAULT_SETTINGS.panelPosition;
     this.addSettingTab(new C4SettingTab(this.app, this));
 
@@ -48,8 +53,9 @@ export default class ExcalidrawC4Plugin extends Plugin {
     this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.syncViews()));
     this.registerEvent(this.app.workspace.on("file-open", () => this.syncViews()));
     this.app.workspace.onLayoutReady(() => this.syncViews());
-    // Enter or a double-click on a C4 element or relationship opens its form instead of Excalidraw's text editing.
-    this.registerDomEvent(window, "keydown", (e) => this.onEnter(e), { capture: true });
+    // The shortcuts from the settings; a double-click on a C4 element or relationship opens its form instead of
+    // Excalidraw's text editing.
+    this.registerDomEvent(window, "keydown", (e) => this.onKey(e), { capture: true });
     this.registerDomEvent(window, "dblclick", (e) => this.onDoubleClick(e), { capture: true });
     // A box dragged into another system or container moves into it; one dragged out of its boundary is marked.
     this.registerDomEvent(window, "pointerdown", (e) => this.onPointerDown(e), { capture: true });
@@ -101,16 +107,64 @@ export default class ExcalidrawC4Plugin extends Plugin {
     return s.viewModeEnabled || s.editingTextElement ? null : view;
   }
 
-  private onEnter(e: KeyboardEvent) {
-    if (e.key !== "Enter" || e.isComposing || e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
+  /** Runs the shortcut of a key pressed on a drawing, instead of what Excalidraw would do with the key. */
+  private onKey(e: KeyboardEvent) {
+    if (e.isComposing || e.repeat) return;
     const view = this.editedView();
     const target = e.target instanceof HTMLElement ? e.target : null;
     if (!view || target?.closest("input, textarea, [contenteditable='true'], .modal-container")) return;
     if (target && target !== activeDocument.body && !view.contentEl.contains(target)) return;
-    if (!selectedItem(view)) return;
+    const pressed = actionOf(this.settings.shortcuts, e);
+    let done = !!pressed && this.runShortcut(view, pressed.action, pressed.extend);
+    // Enter never starts Excalidraw's own text editing of a C4 element or relationship: the form edits it.
+    if (!done && shortcutOf(e) === "Enter" && selectedItem(view)) done = true;
+    if (!done) return;
     e.preventDefault();
     e.stopImmediatePropagation();
-    this.promptEdit(view);
+  }
+
+  /** Runs a shortcut's action when it applies; false leaves the key to Excalidraw. */
+  private runShortcut(view: ExcalidrawView, action: ShortcutAction, extend: boolean): boolean {
+    if (isMove(action)) {
+      // Instead of moving the selection, unless something else than C4 elements and relationships is selected.
+      if (!onlyC4Selected(view)) return false;
+      selectNext(view, action, extend);
+      return true;
+    }
+    switch (action) {
+      case "add":
+        this.addByKey(view);
+        return true;
+      case "zoomIn":
+        if (!diagramInfo(view).zoomIn) return false;
+        this.zoomIn(view);
+        return true;
+      case "zoomOut":
+        if (diagramInfo(view).zoomOut) {
+          this.zoomOut(view);
+          return true;
+        }
+        // Its key never deletes a C4 element or relationship, as Backspace would: Delete does.
+        return !!selectedElements(view).length || !!selectedItem(view);
+      case "edit":
+        if (!selectedItem(view)) return false;
+        this.promptEdit(view);
+        return true;
+    }
+  }
+
+  /**
+   * Adds what the selection asks for: a relationship between two selected elements, else an element of the level on the
+   * canvas, of the selected element's kind when the level takes it.
+   */
+  private addByKey(view: ExcalidrawView) {
+    const selected = selectedElements(view);
+    if (selected.length === 2) return this.promptRelationship(view);
+    if (selected.length > 2) return void new Notice("Select two elements to add a relationship between them.");
+    const kinds = diagramInfo(view).kinds;
+    const own = selected[0]?.data.kind;
+    const kind = own && kinds.includes(own) ? own : kinds.includes("system") ? "system" : kinds[0];
+    if (kind) this.promptElement(view, kind, false, kinds);
   }
 
   private onDoubleClick(e: MouseEvent) {
@@ -126,8 +180,10 @@ export default class ExcalidrawC4Plugin extends Plugin {
     e.preventDefault();
     e.stopImmediatePropagation();
     api.updateScene({ appState: { selectedElementIds: { [item.el.id]: true } }, captureUpdate: "NEVER" });
-    // The selection reaches the app state only later.
-    this.promptEdit(view, item);
+    // A system or container opens, as Enter does; anything else opens its form. The selection reaches the app state
+    // only later, so the item goes along.
+    if (!isRelationship(item) && zoomView(item.data)) this.zoomIn(view, item);
+    else this.promptEdit(view, item);
   }
 
   private onPointerDown(e: PointerEvent) {
@@ -187,8 +243,8 @@ export default class ExcalidrawC4Plugin extends Plugin {
     if (r && !reverseRelationship(view, r.el.id)) new Notice(NO_EXCALIDRAW);
   }
 
-  private zoomIn(view: ExcalidrawView) {
-    if (!zoomIn(view)) new Notice(NO_EXCALIDRAW);
+  private zoomIn(view: ExcalidrawView, item?: Selected) {
+    if (!zoomIn(view, item)) new Notice(NO_EXCALIDRAW);
     this.refreshView(view);
   }
 
@@ -242,6 +298,7 @@ export default class ExcalidrawC4Plugin extends Plugin {
     const existing = this.states.get(view);
     if (existing?.api === api) {
       existing.panel.mount(view.contentEl);
+      existing.highlight.mount(view.contentEl);
       this.refreshPanel(existing);
       return;
     }
@@ -254,8 +311,10 @@ export default class ExcalidrawC4Plugin extends Plugin {
       zoomIn: () => this.zoomIn(view),
       zoomOut: () => this.zoomOut(view),
     });
-    const s: ViewState = { view, api, panel, raf: 0, selection: null, viewMode: undefined, revision: NaN };
+    const highlight = new Highlight();
+    const s: ViewState = { view, api, panel, highlight, raf: 0, highlightRaf: 0, selection: null, viewMode: undefined, revision: NaN };
     panel.mount(view.contentEl);
+    highlight.mount(view.contentEl);
     s.unsubscribe = api.onChange?.((els, appState) => this.onSceneChange(s, els, appState));
     this.states.set(view, s);
     this.refreshPanel(s);
@@ -265,7 +324,9 @@ export default class ExcalidrawC4Plugin extends Plugin {
   private detach(s: ViewState) {
     s.unsubscribe?.();
     if (s.raf) window.cancelAnimationFrame(s.raf);
+    if (s.highlightRaf) window.cancelAnimationFrame(s.highlightRaf);
     s.panel.destroy();
+    s.highlight.destroy();
   }
 
   /**
@@ -274,6 +335,13 @@ export default class ExcalidrawC4Plugin extends Plugin {
    */
   private onSceneChange(s: ViewState, els: readonly El[], appState: AppState) {
     if (!s.drag && revisionOf(els) !== s.revision) window.requestAnimationFrame(() => this.checkCanvas(s));
+    // The highlight follows the selection, its elements, and the view as it scrolls and zooms.
+    if (!s.highlightRaf) {
+      s.highlightRaf = window.requestAnimationFrame(() => {
+        s.highlightRaf = 0;
+        this.refreshHighlight(s);
+      });
+    }
     if (appState.selectedElementIds === s.selection && appState.viewModeEnabled === s.viewMode) return;
     s.selection = appState.selectedElementIds;
     s.viewMode = appState.viewModeEnabled;
@@ -283,6 +351,11 @@ export default class ExcalidrawC4Plugin extends Plugin {
         this.refreshPanel(s);
       });
     }
+  }
+
+  private refreshHighlight(s: ViewState) {
+    const state = s.api.getAppState();
+    s.highlight.update(state.viewModeEnabled ? [] : selectionShapes(s.view), state, s.view.contentEl);
   }
 
   private refreshPanel(s: ViewState) {
@@ -306,7 +379,13 @@ export default class ExcalidrawC4Plugin extends Plugin {
     return true;
   }
 
-  private promptElement(view: ExcalidrawView, kind: C4Kind, initiallyExternal: boolean) {
+  /** The form adding an element; with `kinds`, it can switch between them. */
+  private promptElement(view: ExcalidrawView, initialKind: C4Kind, initiallyExternal: boolean, kinds: C4Kind[] = []) {
+    if (selectedElements(view).length > 1) {
+      new Notice("With more than one element selected, only a relationship can be added: select two elements.");
+      return;
+    }
+    let kind = initialKind;
     if (!canAdd(view, kind)) {
       // Only the kinds of the level on the canvas: the others are added on their own level.
       const where = kind === "container" ? "a software system" : kind === "component" ? "a container" : null;
@@ -328,6 +407,19 @@ export default class ExcalidrawC4Plugin extends Plugin {
       modal.setTitle(heading());
     }));
     modal.extras.push(metadataEditor(rows, () => modal.submit()));
+    // People and systems in the system context, which takes both: the form switches between them, as their fields are the same.
+    const choice: C4Kind[] = kinds.filter((k) => !hasTechnology(k));
+    if (choice.length > 1 && choice.includes(kind)) {
+      modal.before.push((el) => {
+        new Setting(el).setName("Kind").setClass("c4-field").addDropdown((d) => {
+          for (const k of choice) d.addOption(k, kindTitle(k));
+          d.setValue(kind).onChange((v) => {
+            kind = v as C4Kind;
+            modal.setTitle(heading());
+          });
+        });
+      });
+    }
     modal.open();
   }
 
@@ -380,15 +472,18 @@ export default class ExcalidrawC4Plugin extends Plugin {
     };
     const ends = [nameOf(el.startBinding?.elementId), nameOf(el.endBinding?.elementId)];
     let reversed = false;
+    const rows: [string, string][] = Object.entries(data.metadata ?? {});
     const title = () => (reversed ? [...ends].reverse() : ends).join(" → ");
     const modal = new FormModal(this.app, title(), fields, (v) => {
-      const updated = updateRelationship(view, el.id, { ...data, description: v.description ?? "", technology: v.technology }, reversed);
+      const metadata = cleanMetadata(rows);
+      const updated = updateRelationship(view, el.id, { ...data, description: v.description ?? "", technology: v.technology, metadata }, reversed);
       if (!updated) new Notice(NO_EXCALIDRAW);
     }, "Save");
     modal.headerButton = reverseButton(() => {
       reversed = !reversed;
       modal.setTitle(title());
     });
+    modal.extras.push(metadataEditor(rows, () => modal.submit()));
     modal.open();
   }
 
@@ -410,15 +505,18 @@ export default class ExcalidrawC4Plugin extends Plugin {
       { key: "description", name: "Description", value: "Uses" },
       { key: "technology", name: "Technology", placeholder: "E.g. JSON/HTTPS" },
     ];
+    const rows: [string, string][] = [];
     const modal = new FormModal(this.app, title(), fields, (v) => {
       const [from, to] = ends();
-      const added = addRelationship(view, from.el, to.el, { relationship: true, description: v.description ?? "", technology: v.technology });
+      const metadata = cleanMetadata(rows);
+      const added = addRelationship(view, from.el, to.el, { relationship: true, description: v.description ?? "", technology: v.technology, metadata });
       if (!added) new Notice(NO_EXCALIDRAW);
     });
     modal.headerButton = reverseButton(() => {
       reversed = !reversed;
       modal.setTitle(title());
     });
+    modal.extras.push(metadataEditor(rows, () => modal.submit()));
     modal.open();
   }
 }
@@ -447,7 +545,7 @@ const externalToggle = (get: () => boolean, set: (on: boolean) => void) => (el: 
 };
 
 /**
- * The form's metadata of an element, as key: value rows next to its name like the other fields, edited in place: a
+ * The form's metadata of an element or relationship, as key: value rows next to its name like the other fields, edited in place: a
  * row is added with the button below them and removed with its own. Enter submits the form.
  */
 const metadataEditor = (rows: [string, string][], submit: () => void) => (el: HTMLElement) => {
@@ -538,6 +636,65 @@ class C4SettingTab extends PluginSettingTab {
 
   getSettingDefinitions(): SettingDefinitionItem[] {
     return [
+      ...this.general(),
+      {
+        type: "group",
+        heading: "Keyboard shortcuts",
+        items: SHORTCUT_ACTIONS.map((a) => ({ ...SHORTCUT_NAMES[a], render: (setting: Setting) => this.shortcutSetting(setting, a) })),
+      },
+    ];
+  }
+
+  /**
+   * A shortcut's setting: a button showing its key, which records the next key pressed with its modifiers (Escape
+   * cancels), and buttons to turn it off and to restore its default.
+   */
+  private shortcutSetting(setting: Setting, action: ShortcutAction) {
+    const shortcuts = this.plugin.settings.shortcuts;
+    const save = async (key: string) => {
+      shortcuts[action] = key;
+      await this.plugin.saveSettings();
+    };
+    let stop: (() => void) | undefined;
+    setting.addButton((b) => {
+      const show = () => b.setButtonText(shortcuts[action] || "None");
+      show();
+      b.onClick(() => {
+        stop?.();
+        b.setButtonText("Press a key…");
+        const record = (e: KeyboardEvent) => {
+          const key = shortcutOf(e);
+          if (!key) return; // a modifier alone: wait for the key
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          stop?.();
+          if (key !== "Escape") void save(key).then(show);
+          else show();
+        };
+        window.addEventListener("keydown", record, { capture: true });
+        stop = () => {
+          window.removeEventListener("keydown", record, { capture: true });
+          stop = undefined;
+        };
+      });
+      setting.addExtraButton((x) =>
+        x.setIcon("x").setTooltip("Turn off").onClick(() => {
+          stop?.();
+          void save("").then(show);
+        }),
+      );
+      setting.addExtraButton((x) =>
+        x.setIcon("rotate-ccw").setTooltip(`Restore default (${DEFAULT_SHORTCUTS[action]})`).onClick(() => {
+          stop?.();
+          void save(DEFAULT_SHORTCUTS[action]).then(show);
+        }),
+      );
+    });
+    return () => stop?.();
+  }
+
+  private general(): SettingDefinitionItem[] {
+    return [
       {
         name: "Show panel",
         desc: "Buttons for adding, connecting and editing elements, docked on every drawing.",
@@ -562,6 +719,7 @@ interface HeaderButton {
 /** A small form: Enter submits, Ctrl+Enter in a multi-line field. */
 class FormModal extends Modal {
   private readonly values: Record<string, string> = {};
+  readonly before: ((el: HTMLElement) => void)[] = []; // settings above the fields
   readonly extras: ((el: HTMLElement) => void)[] = []; // more settings below the fields
   headerButton?: HeaderButton;
   private headerEl?: HTMLElement;
@@ -605,6 +763,7 @@ class FormModal extends Modal {
         hb.onClick();
       });
     }
+    for (const before of this.before) before(this.contentEl);
     let first: HTMLElement | null = null;
     for (const f of this.fields) {
       const setting = new Setting(this.contentEl).setName(f.name).setClass("c4-field");

@@ -23,6 +23,7 @@ export interface C4Relationship {
   relationship: true;
   description: string;
   technology?: string;
+  metadata?: Record<string, string>; // key: value pairs, not drawn
 }
 
 /** What a layer below the system context shows: the containers of a system or the components of a container. */
@@ -264,6 +265,28 @@ export function wayBack(from: Box, to: Box) {
       y: axis(c.y, from.y, from.height, to.y, to.height) - b.height / 2,
     };
   };
+}
+
+export type Direction = "up" | "down" | "left" | "right";
+
+/**
+ * The box to go to from a place in a direction: the nearest one whose center lies that way, going more by the distance
+ * along the direction than across it, so the one straight ahead wins over one off to the side. Undefined for none.
+ */
+export function nearestIn<B extends Box>(boxes: readonly B[], from: Vec, dir: Direction): B | undefined {
+  const [ax, ay] = dir === "left" ? [-1, 0] : dir === "right" ? [1, 0] : dir === "up" ? [0, -1] : [0, 1];
+  let best: B | undefined;
+  let bestScore = Infinity;
+  for (const b of boxes) {
+    const c = center(b);
+    const along = (c.x - from.x) * ax + (c.y - from.y) * ay;
+    const across = Math.abs((c.x - from.x) * ay - (c.y - from.y) * ax);
+    // Ahead, within 60 degrees either side of the direction.
+    if (along <= 1 || across > along * 1.75) continue;
+    const score = along + 2 * across;
+    if (score < bestScore) [best, bestScore] = [b, score];
+  }
+  return best;
 }
 
 /** Whether two boxes overlap, or come closer than the gap. */

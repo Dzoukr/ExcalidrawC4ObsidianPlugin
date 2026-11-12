@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cleanMetadata, ELEMENT_WIDTH, KEY, MIN_HEIGHT, PADDING, arrowMidpoint, boxSize, edgePoint, laneLine, laneOffsets, normalOf, rayExit, elementData, elementLabel, lookOf, relationshipData, relationshipLabel, wrap } from "../src/model.ts";
+import { cleanMetadata, nearestIn, ELEMENT_WIDTH, KEY, MIN_HEIGHT, PADDING, arrowMidpoint, boxSize, edgePoint, laneLine, laneOffsets, normalOf, rayExit, elementData, elementLabel, lookOf, relationshipData, relationshipLabel, wrap } from "../src/model.ts";
 
 test("wrap breaks at word boundaries and keeps paragraphs", () => {
   assert.deepEqual(wrap("one two three four", 9), ["one two", "three", "four"]);
@@ -82,4 +82,14 @@ test("metadata keeps rows with a key, trimmed, the last of the same key winning"
   assert.equal(cleanMetadata([]), undefined);
   assert.equal(cleanMetadata([["", "x"]]), undefined);
   assert.deepEqual(cleanMetadata([["empty", ""]]), { empty: "" });
+});
+
+test("going in a direction picks the nearest box that way, straight ahead before one off to the side", () => {
+  const b = (id: string, x: number, y: number) => ({ id, x, y, width: 100, height: 100 });
+  const boxes = [b("right", 300, 0), b("rightFar", 600, 0), b("diagonal", 200, 150), b("below", 0, 300), b("left", -300, 20)];
+  const from = { x: 50, y: 50 };
+  assert.equal(nearestIn(boxes, from, "right")?.id, "right");
+  assert.equal(nearestIn(boxes, from, "down")?.id, "below");
+  assert.equal(nearestIn(boxes, from, "left")?.id, "left");
+  assert.equal(nearestIn(boxes, from, "up"), undefined);
 });

@@ -188,3 +188,41 @@ body .modal .modal-header-button.c4-modal-action {
 .c4-metadata-colon {
   color: var(--text-muted);
 }
+
+/* The outline over the canvas around what is selected, numbered in the order of the selection: a thin accent
+   border over a faint accent fill, as the mind map plugin marks a drop target. */
+.c4-highlight {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.c4-highlight .c4-highlight-box {
+  fill: hsla(var(--interactive-accent-hsl), 0.12);
+  stroke: var(--interactive-accent);
+  stroke-width: 2;
+}
+
+.c4-highlight .c4-highlight-line {
+  fill: none;
+  stroke: var(--interactive-accent);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.c4-highlight .c4-highlight-badge {
+  fill: var(--interactive-accent);
+}
+
+.c4-highlight .c4-highlight-number {
+  fill: var(--text-on-accent);
+  font-size: 11px;
+  font-weight: var(--font-semibold);
+  text-anchor: middle;
+  dominant-baseline: central;
+}

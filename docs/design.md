@@ -18,10 +18,10 @@ Only people and systems, the elements of the system context, say whether they ar
 
 ## Done (0.1.0)
 
-- Commands to add each element kind through a small form; people and systems can be external. A new element goes below the selected one, or in the middle of the view.
+- Commands to add each element kind through a small form; people and systems can be external. A new element goes beside the boxes already there, further right, rather than on top of one. A new element goes below the selected one, or in the middle of the view.
 - A command to add a relationship between two selected elements, with a toggle to reverse its direction.
 - A command to edit the selected element (name, technology, description, and external for people and systems) or relationship. The box is resized around its new text, keeping its center, and its relationships are straightened again.
-- Every element can have metadata: key: value pairs (`metadata` in its data), added, changed and removed in the add and edit forms. They are not drawn, and every box of the element shares them.
+- Every element and relationship can have metadata: key: value pairs (`metadata` in its data), added, changed and removed in the add and edit forms. They are not drawn. Every box of an element shares them; a relationship shares them with its copies in other layers.
 
 ## Levels: one drawing, one layer on the canvas
 
@@ -60,7 +60,7 @@ Each layer edits only its own level: the elements of its scope, inside the bound
 | Component layer of C | components (inside the boundary) | C |
 
 - The panel offers only the kinds of the level, and the commands for the others say which level to go to.
-- The edit form, Enter and a double-click open only for an element of the level, or a relationship with an end there (or at the boundary); for the others a notice says to zoom out. A relationship can be added when one of its ends belongs to the level.
+- The edit form, its shortcut and a double-click open only for an element of the level, or a relationship with an end there (or at the boundary); for the others a notice says to zoom out. A relationship can be added when one of its ends belongs to the level.
 - Only elements of the level are moved into another parent by dragging.
 - What comes from the levels above (the neighbours around the boundary, the relationships between them, and the boundary itself) cannot be deleted in the layer: it is put back, with the relationships glued to it, and a notice says to zoom out. It can still be moved.
 - The elements around the boundary come down from the levels above: as neighbours on zooming in, and with the relationships carried down. A neighbour stays only while a relationship ties it to the scope or to something inside it, in any layer, or to the boundary in this one: one that has none any more leaves the layer when the layer comes on the canvas (zooming in or out, which starts the undo history over), and shows again among the dimmed levels above. Until then it can be deleted by hand.
@@ -79,7 +79,15 @@ The boundary fits the scope's elements in it, growing or shrinking, with room fo
 - **Zoom out** puts the layer one level up on the canvas, with the element selected.
 - The view stays put unless the new layer does not fit in it.
 - The panel shows the current level (System, Container or Component).
-- Enter, or a double-click on a C4 element or relationship, opens its form instead of Excalidraw's text editing.
+- Keyboard shortcuts, set in the plugin's settings (each can be recorded again, turned off or restored):
+  - **Insert**: adds an element of the level on the canvas, of the selected element's kind when the level takes it; in the system context the form switches between a person and a system. With two elements selected it adds a relationship between them.
+  - **Enter**: zooms into the selected system or container.
+  - **Backspace**: zooms out, with or without a selection. It never deletes a C4 element or relationship; Delete does.
+  - **Arrows**: select the nearest element or relationship of the layer that way (a relationship by the middle of its arrow) instead of moving the selection, or with nothing selected the one nearest the middle of the view, scrolling it into view; with **Shift** they add it to the selection, which keeps the order for a relationship. With other drawings selected they move them, as in Excalidraw.
+  - **Space**: edits the selected element or relationship. A key whose action does not apply is left to Excalidraw, but Enter never starts Excalidraw's text editing of a C4 element or relationship.
+- A double-click on an internal system or container zooms into it, as Enter does; on any other C4 element or relationship it opens its form instead of Excalidraw's text editing.
+- What is selected is outlined over the canvas in the accent color, clearer than Excalidraw's own selection (a relationship along its line and around its label), and numbered when more than one thing is selected, in the order a relationship between them would go. The outline is not part of the drawing.
+- With more than one element selected, only a relationship can be added: the panel and the commands offer no elements.
 
 ### Relationships
 
@@ -91,6 +99,8 @@ The boundary fits the scope's elements in it, growing or shrinking, with room fo
 A relationship drawn in one layer is drawn in every other layer that shows its ends or the elements containing them, unless one is already there. So `User → Web app` drawn in the container layer of S puts `User → S` in the system context.
 
 Going down, each relationship of S one level up is carried into S's layer on every zoom into it, when the layer does not show it: as an arrow between the element at the other end and S's boundary, with the same description and technology, to be moved onto the container it is about, edited, or joined by others. One shown below, from or to anything inside S or its boundary, is not carried; one deleted below by mistake comes back on the next zoom. An arrow to the boundary follows the boundary as it grows, and shows as a ghost from the levels below.
+
+Editing a relationship (its description, technology, metadata, or its direction) edits its copies in the other layers too: the relationships between the elements standing for its ends there, up a level or down, that still say what it said, as copied from it. One between the same elements that says something else is another relationship, and is left alone.
 
 Deleting a relationship between two elements deletes, in the other layers, every relationship it stands for: between the same two elements or anything inside them, carried arrows to a boundary included. Not while the layer still has another relationship between the two the same way. It is one undo step after the delete, and a notice says so.
 

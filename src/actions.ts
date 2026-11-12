@@ -1,12 +1,14 @@
 import { AppState, El, ExcalidrawAutomate, ExcalidrawView, getEA } from "./excalidraw";
 import { ghostSource } from "./ghosts";
-import { DiagramId, Scene, endOfLevel, endsOf, grid, levelsUpTo, newId, nextSlot, ofLevel, relationshipsWithin, row, unrelated } from "./layers";
+import type { Shape } from "./highlight";
+import { DiagramId, Scene, copiesOf, endOfLevel, endsOf, grid, levelsUpTo, newId, nextSlot, ofLevel, relationshipsWithin, row, unrelated } from "./layers";
 import { LayerTx, readScene } from "./layertx";
 import {
   BOUNDARY_LABEL, BOUNDARY_PAD, Box, C4Element, C4Relationship, ELEMENT_WIDTH, KEY, MIN_HEIGHT, PADDING, RELATIONSHIP_COLOR, Vec, ViewKind, allowedKinds, arrowMidpoint,
   boundaryLabel, bounds, boxSize, canBeExternal, center, contains, edgePoint, elementData, fittedBoundary, laneLine, laneOffsets, normalOf, elementLabel, lookOf, isGhost, makeWay,
-  overlaps, parentFor, parentKind, pushOut, relationshipData, wayBack, relationshipLabel, zoomView,
+  overlaps, parentFor, parentKind, pushOut, relationshipData, wayBack, relationshipLabel, zoomView, nearestIn,
 } from "./model";
+import type { Direction } from "./model";
 
 const GAP = 120; // between an element and the one added below it
 const FONT_SIZE = 16;
@@ -68,6 +70,66 @@ const viewport = (s: AppState): Box => {
   return { x: -s.scrollX, y: -s.scrollY, width: s.width / zoom, height: s.height / zoom };
 };
 
+/**
+ * Selects the C4 element or relationship next to the selection in a direction, in the layer on the canvas; with
+ * `extend`, adds it to the selection, which keeps the order things were selected in. A relationship is where the middle
+ * of its arrow is. With nothing selected, what is nearest the middle of the view. Brings it into view. False when
+ * there is nothing that way.
+ */
+export function selectNext(view: ExcalidrawView, dir: Direction, extend: boolean): boolean {
+  const api = view.excalidrawAPI!;
+  const { scene, current } = readScene(api.getSceneElements());
+  const place = (e: El): Box => (relationshipData(e.customData) ? { ...arrowMidpoint(e), width: 0, height: 0 } : e);
+  const targets = scene.elementsIn(current)
+    .filter((e) => !e.containerId && !e.locked && (elementData(e.customData) || relationshipData(e.customData)))
+    .map((el) => ({ el, ...place(el) }));
+  const selected = selectedC4(view);
+  const vp = viewport(api.getAppState());
+  let next: (typeof targets)[number] | undefined;
+  if (!selected.length) {
+    const mid = center(vp);
+    const d = (b: Box) => Math.hypot(center(b).x - mid.x, center(b).y - mid.y);
+    next = [...targets].sort((a, b) => d(a) - d(b))[0];
+  } else {
+    // From what was selected last, so a row of elements can be selected one after another.
+    const last = selected[selected.length - 1];
+    next = nearestIn(targets.filter((t) => !selected.some((s) => s.id === t.el.id)), center(place(last)), dir);
+  }
+  if (!next) return false;
+  const ids = extend ? [...selected.map((s) => s.id), next.el.id] : [next.el.id];
+  const appState: Partial<AppState> = { selectedElementIds: Object.fromEntries(ids.map((id) => [id, true])), selectedGroupIds: {} };
+  // Into view when it is not, with its middle in the middle of the view.
+  if (!(next.x >= vp.x && next.y >= vp.y && next.x + next.width <= vp.x + vp.width && next.y + next.height <= vp.y + vp.height)) {
+    const c = center(next);
+    Object.assign(appState, { scrollX: vp.width / 2 - c.x, scrollY: vp.height / 2 - c.y });
+  }
+  api.updateScene({ appState, captureUpdate: "NEVER" });
+  return true;
+}
+
+/** The selected C4 elements and relationships as drawn, in the order of the selection, for the highlight. */
+export function selectionShapes(view: ExcalidrawView): Shape[] {
+  const byId = new Map(view.excalidrawAPI!.getSceneElements().map((e) => [e.id, e]));
+  return selectedC4(view).map((el) => {
+    if (!relationshipData(el.customData)) return { box: el };
+    const ref = el.boundElements?.find((b) => b.type === "text");
+    const label = ref ? byId.get(ref.id) : undefined;
+    return { points: (el.points ?? []).map(([x, y]) => ({ x: el.x + x, y: el.y + y })), label };
+  });
+}
+
+/** Whether all that is selected is C4 elements and relationships, or nothing is. */
+export function onlyC4Selected(view: ExcalidrawView): boolean {
+  const api = view.excalidrawAPI!;
+  const byId = new Map(api.getSceneElements().map((e) => [e.id, e]));
+  return Object.entries(api.getAppState().selectedElementIds ?? {}).every(([id, on]) => {
+    if (!on) return true;
+    let e = byId.get(id);
+    if (e?.containerId) e = byId.get(e.containerId);
+    return !!e && (!!elementData(e.customData) || !!relationshipData(e.customData));
+  });
+}
+
 /** What the panel shows about the layer on the canvas. */
 export interface DiagramInfo {
   title: string; // of the layer
@@ -82,7 +144,8 @@ export function diagramInfo(view: ExcalidrawView): DiagramInfo {
   const item = selectedItem(view);
   return {
     title: levelName(scene, current),
-    kinds: allowedKinds(v?.view ?? null),
+    // With more than one element selected, only a relationship can be added.
+    kinds: selectedElements(view).length > 1 ? [] : allowedKinds(v?.view ?? null),
     zoomIn: !!item && !isRelationship(item) && !!zoomView(item.data),
     zoomOut: v ? levelName(scene, scene.parentLayer(v.scope)) : null,
   };
@@ -224,8 +287,12 @@ export function addElement(view: ExcalidrawView, element: C4Element): boolean {
     const data: C4Element = { ...element, id: newId(), parent: parentFor(element.kind, v, v ? scene.parent(v.scope) : undefined) };
     if (!data.parent) delete data.parent;
     if (!canBeExternal(data.kind)) data.external = scene.inheritedExternal(data.parent);
-    const box = addBox(ea, ltx, data, placeIn(view, scene, layer, data), layer);
-    id = box.id;
+    const added = addBox(ea, ltx, data, placeIn(view, scene, layer, data), layer);
+    id = added.id;
+    // Beside the boxes already there, not on top of one: further right, the way the next one in a row goes.
+    const free = freeSpot(added, scene.boxes(layer));
+    if (free.x !== added.x || free.y !== added.y) moveBox(ltx, id, free.x - added.x, free.y - added.y);
+    const box = ltx.get(id)!;
     fitBoundary(ltx, layer, [box.id]);
     // Every level above, up to its own: the system context for people and systems, the layer of its parent for the
     // others. In the same place relative to what is around it: each level down makes way for the element opened in
@@ -397,16 +464,28 @@ export function updateRelationship(view: ExcalidrawView, arrowId: string, data: 
   return withLayers(view, (ea, ltx) => {
     const arrow = ltx.get(arrowId);
     if (!arrow) return;
-    ltx.patch(arrow.id, { customData: { ...(arrow.customData ?? {}), [KEY]: data } });
-    const text = boundText(ltx, arrow);
-    if (text) {
-      const label = relationshipLabel(data);
-      const m = measure(ea, text, label);
-      const mid = arrowMidpoint(arrow);
-      ltx.patch(text.id, { ...textOf(label), ...m, x: mid.x - m.width / 2, y: mid.y - m.height / 2 });
+    // With its copies in the other layers, which say the same as it did.
+    const copies = copiesOf(ltx.scene(), arrow);
+    for (const a of [arrow, ...copies]) {
+      setRelationship(ea, ltx, a.id, { ...relationshipData(a.customData)!, ...data });
+      if (reverse) turn(ltx, a.id);
     }
-    if (reverse) turn(ltx, arrowId);
   });
+}
+
+/** Changes one relationship arrow's data and label. */
+function setRelationship(ea: ExcalidrawAutomate, ltx: LayerTx, arrowId: string, data: C4Relationship) {
+  const arrow = ltx.get(arrowId);
+  if (!arrow) return;
+  if (!data.metadata) delete data.metadata;
+  ltx.patch(arrow.id, { customData: { ...(arrow.customData ?? {}), [KEY]: data } });
+  const text = boundText(ltx, arrow);
+  if (text) {
+    const label = relationshipLabel(data);
+    const m = measure(ea, text, label);
+    const mid = arrowMidpoint(arrow);
+    ltx.patch(text.id, { ...textOf(label), ...m, x: mid.x - m.width / 2, y: mid.y - m.height / 2 });
+  }
 }
 
 /** Turns a relationship the other way round. */
@@ -545,8 +624,7 @@ export function addRelationship(view: ExcalidrawView, from: El, to: El, data: C4
 }
 
 /** Puts the layer of the selected system or container on the canvas, creating it first if there is none. */
-export function zoomIn(view: ExcalidrawView): boolean {
-  const item = selectedItem(view);
+export function zoomIn(view: ExcalidrawView, item = selectedItem(view)): boolean {
   if (!item || isRelationship(item)) return false;
   const kind = zoomView(item.data);
   if (!kind) return false;
@@ -692,7 +770,7 @@ function carryDown(ea: ExcalidrawAutomate, ltx: LayerTx, scope: string) {
       otherBox = addBox(ea, ltx, { ...scene.element(other)!, id: other }, freeSpot({ ...there, x: there.x + d.x, y: there.y + d.y }, taken), scope);
     }
     const boundary = ltx.get(rect.id)!;
-    const data: C4Relationship = { relationship: true, description: r.data.description, technology: r.data.technology };
+    const data: C4Relationship = { relationship: true, description: r.data.description, technology: r.data.technology, metadata: r.data.metadata };
     if (outgoing) addArrow(ea, ltx, boundary, otherBox, data, scope);
     else addArrow(ea, ltx, otherBox, boundary, data, scope);
   }
@@ -821,7 +899,7 @@ function reparent(ea: ExcalidrawAutomate, ltx: LayerTx, id: string, parent: stri
     .map((r) => ({
       from: scene.modelId(r.from)!,
       to: scene.modelId(r.to)!,
-      data: { relationship: true as const, description: r.data.description, technology: r.data.technology },
+      data: { relationship: true as const, description: r.data.description, technology: r.data.technology, metadata: r.data.metadata },
     }));
   const neighbours = scene.neighbours(parent);
   for (const b of leaving) removeBox(ltx, b.id);
