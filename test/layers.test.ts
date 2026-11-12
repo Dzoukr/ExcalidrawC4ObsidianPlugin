@@ -50,6 +50,13 @@ test("an element is in the layer it is kept in", () => {
   assert.equal(scene.view(CONTEXT), null);
 });
 
+test("a drawing has a kind of element when a box of it is on any layer", () => {
+  assert.ok(sceneOf({ [CONTEXT]: context }).hasKind("person"));
+  assert.ok(!sceneOf({ [CONTEXT]: context.filter((e) => e.id !== "user") }).hasKind("person"));
+  assert.ok(!sceneOf({ [CONTEXT]: [] }).hasKind("person"));
+  assert.ok(sceneOf({ [CONTEXT]: [], s: shop }).hasKind("container"));
+});
+
 test("boxes with the same id are one element; old boxes go by their own id", () => {
   const scene = sceneOf({ [CONTEXT]: [...context, box("old", { kind: "system" })], s: shop });
   assert.deepEqual(scene.boxesOf("u").map((b) => b.id), ["user", "user2"]);

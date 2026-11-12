@@ -62,6 +62,11 @@ export class Scene {
     return this.data.get(id);
   }
 
+  /** Whether the drawing has an element of the kind, on any layer. */
+  hasKind(kind: C4Element["kind"]): boolean {
+    return [...this.data.values()].some((d) => d.kind === kind);
+  }
+
   boxesOf(id: string): El[] {
     return this.boxesById.get(id) ?? [];
   }

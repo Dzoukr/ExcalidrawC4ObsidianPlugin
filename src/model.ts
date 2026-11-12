@@ -7,16 +7,16 @@ export const KINDS = ["person", "system", "container", "component"] as const;
 export type C4Kind = (typeof KINDS)[number];
 
 /** What a container is, which gives its box its shape. */
-export const CONTAINER_TYPES = ["generic", "storage", "directory", "database", "server", "spa"] as const;
+export const CONTAINER_TYPES = ["generic", "server", "spa", "database", "storage", "directory"] as const;
 export type ContainerType = (typeof CONTAINER_TYPES)[number];
 
 export const CONTAINER_TYPE_TITLES: Record<ContainerType, string> = {
   generic: "Generic",
-  storage: "Storage",
-  directory: "Directory",
-  database: "Database",
   server: "Server-side app",
   spa: "Single-page app",
+  database: "Database",
+  storage: "Storage",
+  directory: "Directory",
 };
 
 export const isContainerType = (t: unknown): t is ContainerType => CONTAINER_TYPES.includes(t as ContainerType);
@@ -224,11 +224,12 @@ export const LOOK_KEY_TITLES: Record<LookKey, string> = {
   external: "External element",
 };
 
-// As in the C4 model's own diagrams: an outline and text in one color on a white fill, grey for external elements.
+// As in the C4 model's own diagrams: an outline and text in one color on a white fill, green for people, grey for external elements.
 const INTERNAL: Look = { background: "#ffffff", stroke: "#1168bd", text: "#1168bd" };
+const PERSON: Look = { background: "#ffffff", stroke: "#297e06", text: "#297e06" };
 const EXTERNAL: Look = { background: "#ffffff", stroke: "#6b6b6b", text: "#6b6b6b" };
 export const DEFAULT_LOOKS: Record<LookKey, Look> = Object.fromEntries(
-  LOOK_KEYS.map((k) => [k, k === "external" ? EXTERNAL : INTERNAL]),
+  LOOK_KEYS.map((k) => [k, k === "external" ? EXTERNAL : k === "person" ? PERSON : INTERNAL]),
 ) as Record<LookKey, Look>;
 
 let looks: Record<LookKey, Look> = DEFAULT_LOOKS;

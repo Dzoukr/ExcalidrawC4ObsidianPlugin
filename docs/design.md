@@ -28,13 +28,36 @@ Only people and systems, the elements of the system context, say whether they ar
 
 Every type of element has its colors, an outline, a fill and a text color: a person, a software system, each type of container, a component, and one set for all external elements. A **theme** gives them all, as in the mind map plugin:
 
-- Built-in themes: **Classic** (the key of the C4 model's diagrams: blue on white, grey for external elements), **Filled** (the well-known filled C4 boxes, dark to light blue down the levels), **Pastel** (a color for each kind and type of container), **Ocean**, **Sunset**, **Forest** and **Monochrome**.
+- Built-in themes: **Classic** (the key of the C4 model's diagrams: blue on white, green for people, grey for external elements), **Filled** (the well-known filled C4 boxes, dark to light blue down the levels, green for people), **Pastel** (a color for each kind and type of container, as a mind map's branches), **Ocean**, **Sunset**, **Forest** and **Monochrome**.
 - The user's own themes, on the settings' Themes page: each started as a copy of any theme, renamed, deleted, its colors edited type by type, reordered; imported and exported as JSON through the clipboard or a file. Colors missing from an imported theme are the Classic ones. The colors the settings had before themes became the Custom theme.
 - **Each drawing keeps its theme** (`theme` in the store on the carrier). A drawing takes the theme of new drawings, a setting, with its first C4 element; it is changed from the panel's theme menu or the command palette. A drawing whose theme was deleted has the Classic colors.
 
 An element can have colors of its own, set in its edit form, over those of its type in the drawing's theme: only the ones that differ are kept (`look` in its data), and the form resets them to its type's.
 
 The parts of a shape keep the colors they were drawn in (`customData.c4.look`). Whenever the plugin changes a drawing, and when one opens, the boxes drawn in other colors than theirs now are drawn again in theirs, keeping their size; after a theme or its colors change, the open drawings are drawn again.
+
+### Drawings of other plugins
+
+Other plugins may draw their own kind of diagram in Excalidraw drawings too, such as the mind map plugin. Each drawing belongs to one of them, so their panels, keys and double-clicks never get in each other's way. The plugins need not know each other, only two conventions they all follow (`src/mode.ts`):
+
+- **The drawing's kind is in its frontmatter**: `dzoukr-diagram-kind: c4`, `dzoukr-diagram-kind: mindmap` and so on, out of the `excalidraw-` keys the Excalidraw plugin keeps for itself. A plugin writes it when it takes a drawing over; a drawing of another kind it leaves alone.
+- **A registry on the window**: the map `window.dzoukrDiagramKinds` holds, for the kind of each such plugin while it is enabled, the version of these conventions it follows (`{ version: 1 }`). The conventions only change in ways plugins following an earlier version still work with; a change they would not work with raises the version.
+- **A shared chooser row** (`src/chooser.ts`): on a drawing nobody's yet, each plugin puts one `button.dzoukr-diagram-choice` (its kind in `data-kind`) into the `div.dzoukr-diagram-chooser` of the view, "Use this drawing for: C4 · Mind map", made by the first and removed by the last, all styling it alike; its own panel is hidden there. Last in the row, **Excalidraw** keeps the drawing plain: it writes the kind `excalidraw`, which every plugin leaves alone as it does any kind not its own. Whichever plugin offers first adds that button, and takes it out when it leaves.
+
+Whom a drawing belongs to, for this plugin:
+
+| Drawing | C4 alone | With another such plugin |
+|---|---|---|
+| Kind `c4` | C4: the whole panel | C4: the whole panel |
+| Another kind | panel hidden, plugin silent | panel hidden, plugin silent |
+| No kind, with C4 elements | C4; the kind is written | C4; the kind is written |
+| No kind, anything else (empty included) | C4, as if no other plugin were installed; with the setting "Ask what a new drawing is for" on, nobody's, as with another plugin | nobody's: no panel, a **C4 diagrams** button in the shared chooser row, keys and double-clicks left to Excalidraw |
+
+- The command "Keep this drawing plain Excalidraw" does the same as the Excalidraw button, on any drawing, a C4 one included (its elements stay as plain shapes).
+- The C4 diagrams button in the chooser, the command "Use this drawing for C4 diagrams", or any C4 command on a drawing nobody's yet takes it over: its kind is written. The command also takes over another plugin's drawing; what that plugin drew stays as plain shapes.
+- The kind of a drawing with C4 elements and none is written once its first element is drawn, or when one drawn before kinds is open; only while the drawing has no unsaved changes.
+- Silent means: no keys, double-clicks, selection outline, redrawing in new colors, guard or marks. Commands from the palette are not offered on another plugin's drawing.
+- The mind map plugin follows the same conventions. It has to be released with them before or with this plugin, or it would still act in C4 drawings.
 
 ## Done (0.1.0)
 
@@ -100,7 +123,7 @@ The boundary fits the scope's elements in it, growing or shrinking, with room fo
 - The view stays put unless the new layer does not fit in it.
 - The panel shows the current level (System, Container or Component).
 - Keyboard shortcuts, set in the plugin's settings (each can be recorded again, turned off or restored):
-  - **Insert**: adds an element of the level on the canvas, of the selected element's kind when the level takes it; in the system context the form switches between a person and a system with a row of two buttons picturing them, like the type of a container. With two elements selected it adds a relationship between them.
+  - **Insert**: adds an element of the level on the canvas, of the selected element's kind when the level takes it; with nothing selected in the system context, a person until the drawing has one, then a system. The form is the same as the one editing the element. With two elements selected it adds a relationship between them.
   - **Enter**: zooms into the selected system or container.
   - **Backspace**: zooms out, with or without a selection. It never deletes a C4 element or relationship; Delete does.
   - **Arrows**: select the nearest element or relationship of the layer that way (a relationship by the middle of its arrow) instead of moving the selection, or with nothing selected the one nearest the middle of the view, scrolling it into view; with **Shift** they add it to the selection, which keeps the order for a relationship. With other drawings selected they move them, as in Excalidraw.
@@ -108,6 +131,7 @@ The boundary fits the scope's elements in it, growing or shrinking, with room fo
 - A double-click on an internal system or container zooms into it, as Enter does; on any other C4 element or relationship it opens its form instead of Excalidraw's text editing.
 - What is selected is outlined over the canvas in the accent color, clearer than Excalidraw's own selection (a relationship along its line and around its label), and numbered when more than one thing is selected, in the order a relationship between them would go. The outline is not part of the drawing.
 - With more than one element selected, only a relationship can be added: the panel and the commands offer no elements.
+- **Pause**, as in the mind map plugin: the panel's pause button or a command leaves keys and double-clicks to Excalidraw, in every drawing, and hides the selection outline; the panel keeps only the button that resumes. Not saved: a restart resumes. The plugin still keeps the drawing whole while paused: elements of the levels above are put back, boxes dropped into another boundary move there, misplaced ones are marked. Commands from the palette still work.
 
 ### Relationships
 

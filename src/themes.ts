@@ -50,53 +50,72 @@ function palette(p: {
 }
 
 const PALETTES: Record<Preset, Colors> = {
-  // As in the key of the C4 model's diagrams: blue on white, grey for external elements.
+  // As in the key of the C4 model's diagrams: blue on white, green for people, grey for external elements.
   classic: DEFAULT_LOOKS,
-  // The C4 model's well-known filled boxes: dark to light blue going down the levels, grey for external elements.
+  // The C4 model's well-known filled boxes: dark to light blue going down the levels, green for people, grey for external elements.
   filled: palette({
-    person: { background: "#08427b", stroke: "#073b6f", text: "#ffffff" },
+    person: { background: "#297e06", stroke: "#236b05", text: "#ffffff" },
     system: { background: "#1168bd", stroke: "#0f5eaa", text: "#ffffff" },
     container: { background: "#438dd5", stroke: "#3c7fc0", text: "#ffffff" },
     component: { background: "#85bbf0", stroke: "#78a8d8", text: "#000000" },
     external: { background: "#999999", stroke: "#8a8a8a", text: "#ffffff" },
   }),
-  // A soft color for each kind and type of container.
+  // As a mind map's branches: a color of its own for each kind and type of container, a full fill under a strong outline.
   pastel: palette({
-    person: outlined("#7048e8", "#e5dbff", "#343a40"),
-    system: outlined("#1971c2", "#d0ebff", "#343a40"),
-    container: outlined("#1098ad", "#c5f6fa", "#343a40"),
+    person: outlined("#6741d9", "#d0bfff", "#212529"),
+    system: outlined("#1971c2", "#a5d8ff", "#212529"),
+    container: outlined("#0c8599", "#99e9f2", "#212529"),
     types: {
-      storage: outlined("#f08c00", "#fff3bf", "#343a40"),
-      directory: outlined("#e8590c", "#ffe8cc", "#343a40"),
-      database: outlined("#2f9e44", "#d3f9d8", "#343a40"),
-      spa: outlined("#d6336c", "#ffdeeb", "#343a40"),
+      storage: outlined("#f08c00", "#ffec99", "#212529"),
+      directory: outlined("#e8590c", "#ffd8a8", "#212529"),
+      database: outlined("#2f9e44", "#b2f2bb", "#212529"),
+      server: outlined("#3b5bdb", "#bac8ff", "#212529"),
+      spa: outlined("#c2255c", "#fcc2d7", "#212529"),
     },
-    component: outlined("#9c36b5", "#f3d9fa", "#343a40"),
-    external: outlined("#868e96", "#f1f3f5", "#495057"),
+    component: outlined("#9c36b5", "#eebefa", "#212529"),
+    external: outlined("#868e96", "#e9ecef", "#495057"),
   }),
+  // The colors of the sea and what lives in it.
   ocean: palette({
-    person: outlined("#0b7285", "#c5f6fa", "#102a43"),
-    system: outlined("#1864ab", "#d0ebff", "#102a43"),
-    container: outlined("#1971c2", "#e7f5ff", "#102a43"),
-    types: { database: outlined("#364fc7", "#dbe4ff", "#102a43"), storage: outlined("#087f5b", "#c3fae8", "#102a43") },
-    component: outlined("#5f3dc4", "#e5dbff", "#102a43"),
-    external: outlined("#868e96", "#f8f9fa", "#495057"),
+    person: outlined("#0b7285", "#66d9e8", "#102a43"),
+    system: outlined("#1864ab", "#74c0fc", "#102a43"),
+    container: outlined("#364fc7", "#91a7ff", "#102a43"),
+    types: {
+      storage: outlined("#2b8a3e", "#8ce99a", "#102a43"),
+      directory: outlined("#5c940d", "#c0eb75", "#102a43"),
+      database: outlined("#087f5b", "#63e6be", "#102a43"),
+      spa: outlined("#862e9c", "#e599f7", "#102a43"),
+    },
+    component: outlined("#5f3dc4", "#b197fc", "#102a43"),
+    external: outlined("#868e96", "#e9ecef", "#495057"),
   }),
+  // The colors of the evening sky, from red to purple.
   sunset: palette({
-    person: outlined("#c92a2a", "#ffe3e3", "#3b1f1f"),
-    system: outlined("#e8590c", "#ffe8cc", "#3b1f1f"),
-    container: outlined("#f08c00", "#fff3bf", "#3b1f1f"),
-    types: { database: outlined("#a61e4d", "#fcc2d7", "#3b1f1f"), storage: outlined("#d9480f", "#ffd8a8", "#3b1f1f") },
-    component: outlined("#c2255c", "#ffdeeb", "#3b1f1f"),
-    external: outlined("#868e96", "#f8f9fa", "#495057"),
+    person: outlined("#c92a2a", "#ffa8a8", "#3b1f1f"),
+    system: outlined("#d9480f", "#ffc078", "#3b1f1f"),
+    container: outlined("#e67700", "#ffe066", "#3b1f1f"),
+    types: {
+      storage: outlined("#5f3dc4", "#b197fc", "#3b1f1f"),
+      directory: outlined("#e03131", "#ffc9c9", "#3b1f1f"),
+      database: outlined("#a61e4d", "#faa2c1", "#3b1f1f"),
+      spa: outlined("#f08c00", "#ffd8a8", "#3b1f1f"),
+    },
+    component: outlined("#862e9c", "#e599f7", "#3b1f1f"),
+    external: outlined("#868e96", "#e9ecef", "#495057"),
   }),
+  // Greens of leaves and moss, with bark, water and autumn leaves.
   forest: palette({
-    person: outlined("#2b8a3e", "#d3f9d8", "#1b2e1f"),
-    system: outlined("#5c940d", "#e9fac8", "#1b2e1f"),
-    container: outlined("#087f5b", "#c3fae8", "#1b2e1f"),
-    types: { database: outlined("#7c5a2e", "#f1e3d3", "#1b2e1f"), storage: outlined("#0b7285", "#c5f6fa", "#1b2e1f") },
-    component: outlined("#e67700", "#fff3bf", "#1b2e1f"),
-    external: outlined("#868e96", "#f8f9fa", "#495057"),
+    person: outlined("#2b8a3e", "#8ce99a", "#1b2e1f"),
+    system: outlined("#5c940d", "#c0eb75", "#1b2e1f"),
+    container: outlined("#087f5b", "#63e6be", "#1b2e1f"),
+    types: {
+      storage: outlined("#0b7285", "#66d9e8", "#1b2e1f"),
+      directory: outlined("#e67700", "#ffe066", "#1b2e1f"),
+      database: outlined("#7c5a2e", "#e0c3a0", "#1b2e1f"),
+      spa: outlined("#c92a2a", "#ffa8a8", "#1b2e1f"),
+    },
+    component: outlined("#d9480f", "#ffc078", "#1b2e1f"),
+    external: outlined("#868e96", "#e9ecef", "#495057"),
   }),
   monochrome: palette({
     person: outlined("#212529"),

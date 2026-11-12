@@ -32,4 +32,8 @@ export default defineConfig(
     },
   },
   ...obsidianmd.configs.recommended,
+  {
+    // C4 is the name of the model, written as such in the middle of a sentence too.
+    rules: { "obsidianmd/ui/sentence-case": ["warn", { brands: ["C4", "Excalidraw"] }] },
+  },
 );

@@ -9,6 +9,7 @@ export interface PanelActions {
   zoomIn: () => void;
   zoomOut: () => void;
   theme: (at: HTMLElement) => void; // shows the themes at the button
+  togglePause: () => void;
 }
 
 export interface PanelState {
@@ -19,6 +20,7 @@ export interface PanelState {
   kinds: C4Kind[]; // the kinds the layer takes
   zoomIn: boolean; // the selection has a layer to zoom into
   zoomOut: string | null; // title of the layer one level up
+  paused: boolean; // the plugin leaves keys and double-clicks to Excalidraw
 }
 
 /** Where the panel is docked: a row at the bottom or top of the canvas, or a column on its left or right side. */
@@ -30,7 +32,10 @@ export const isPanelPosition = (p: unknown): p is PanelPosition => typeof p === 
 
 const ICONS: Record<C4Kind, string> = { person: "user", system: "box", container: "container", component: "component" };
 
-type Key = C4Kind | "relate" | "edit" | "reverse" | "zoomIn" | "zoomOut" | "theme";
+type Key = C4Kind | "relate" | "edit" | "reverse" | "zoomIn" | "zoomOut" | "theme" | "pause";
+
+const PAUSE = "Pause C4 editing (use Excalidraw's own shortcuts)";
+const RESUME = "Resume C4 editing";
 
 /** Floating control bar docked on an Excalidraw view: add elements, connect and edit the selection. */
 export class C4Panel {
@@ -66,7 +71,9 @@ export class C4Panel {
     const zoom = group();
     button(zoom, "zoomIn", "zoom-in", "Zoom into the selected system or container", a.zoomIn);
     button(zoom, "zoomOut", "zoom-out", "Zoom out", a.zoomOut);
-    button(group(), "theme", "palette", "Theme of the drawing", (b) => a.theme(b));
+    const more = group();
+    button(more, "theme", "palette", "Theme of the drawing", (b) => a.theme(b));
+    button(more, "pause", "pause", PAUSE, a.togglePause);
   }
 
   mount(parent: HTMLElement) {
@@ -87,6 +94,18 @@ export class C4Panel {
   }
 
   update(s: PanelState) {
+    // Paused, only the button that resumes works, lit so it is obvious how to resume.
+    const pause = this.buttons.get("pause")!;
+    if (pause.hasClass("is-active") !== s.paused) setIcon(pause, s.paused ? "play" : "pause");
+    pause.toggleClass("is-active", s.paused);
+    pause.setAttribute("aria-label", s.paused ? RESUME : PAUSE);
+    this.el.toggleClass("c4-paused", s.paused);
+    if (s.paused) {
+      for (const b of this.buttons.values()) b.disabled = b !== pause;
+      return;
+    }
+    this.buttons.get("theme")!.disabled = false;
+    pause.disabled = false;
     this.buttons.get("relate")!.disabled = !s.pair;
     this.buttons.get("edit")!.disabled = !s.item;
     this.buttons.get("reverse")!.disabled = !s.relationship;

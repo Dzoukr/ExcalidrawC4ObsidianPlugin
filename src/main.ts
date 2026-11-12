@@ -3,21 +3,23 @@ import {
   normalizePath, setIcon,
 } from "obsidian";
 import {
-  Selected, SelectedRelationship, addElement, addRelationship, canAdd, canEdit, canRelate, deleteBelow, diagramInfo, dropBoxes, isRelationship, itemAt, itemOf, reverseRelationship,
+  Selected, SelectedRelationship, addElement, addRelationship, canAdd, canEdit, canRelate, deleteBelow, diagramInfo, dropBoxes, hasKind, isRelationship, itemAt, itemOf, reverseRelationship,
   onlyC4Selected, refreshLooks, setDrawingTheme, themeOfDrawing, useDrawingColors, selectNext, selectedElements, selectedItem, selectionShapes, updateElement, updateRelationship, zoomIn, zoomOut,
 } from "./actions";
 import { Guard, guardLevels, protectStore, refreshCanvas, selectionOf } from "./layertx";
 import { AppState, El, ExcalidrawAPI, ExcalidrawView, VIEW_TYPE_EXCALIDRAW, isExcalidrawView } from "./excalidraw";
 import {
-  C4Kind, CONTAINER_TYPES, CONTAINER_TYPE_TITLES, ContainerType, Ink, KINDS, Shape, Vec, boundaryData, bounds, canBeExternal, cleanMetadata, elementData, hasTechnology,
+  C4Element, C4Kind, CONTAINER_TYPES, CONTAINER_TYPE_TITLES, ContainerType, Ink, KINDS, Shape, Vec, boundaryData, bounds, canBeExternal, cleanMetadata, elementData, hasTechnology,
   isContainerType, kindTitle, levelOf, shapeDrawing, shapeOf, zoomView, LOOK_KEYS, LOOK_KEY_TITLES, LOOK_PARTS, LOOK_PART_TITLES, Look, LookKey,
-  lookOf, ownLook,
+  lookOf, ownLook, KEY,
 } from "./model";
 import {
   CUSTOM_THEME, Colors, Theme, UserTheme, colorsOf, copyColors, isPreset, mergeColors, newThemeId, parseThemes, setNewDrawingTheme, setUserThemes,
   themeName, themeOptions, themeSwatches, themesToJson, uniqueName, validTheme,
 } from "./themes";
 import { C4Panel, PANEL_POSITIONS, PanelPosition, isPanelPosition } from "./panel";
+import { MODE, MODE_KEY, Owner, isAlone, ownerOf, register } from "./mode";
+import { PLAIN, offer, withdraw } from "./chooser";
 import { Highlight } from "./highlight";
 import { DEFAULT_SHORTCUTS, SHORTCUT_ACTIONS, SHORTCUT_NAMES, ShortcutAction, Shortcuts, actionOf, isMove, loadShortcuts, shortcutOf } from "./keys";
 
@@ -29,9 +31,10 @@ interface Settings {
   shortcuts: Shortcuts;
   theme: Theme; // of new drawings
   themes: UserTheme[]; // the user's own, after the built-in ones
+  askKind: boolean; // ask what a drawing nobody's yet is for, even with no other plugin drawing its own kind of diagram
 }
 
-const DEFAULT_SETTINGS: Settings = { showPanel: true, panelPosition: "right", shortcuts: DEFAULT_SHORTCUTS, theme: "classic", themes: [] };
+const DEFAULT_SETTINGS: Settings = { showPanel: true, panelPosition: "right", shortcuts: DEFAULT_SHORTCUTS, theme: "classic", themes: [], askKind: false };
 
 /**
  * The themes from saved settings, their colors over the defaults. The colors the settings had before themes, if any
@@ -63,6 +66,9 @@ interface ViewState {
   drag?: Map<string, Vec>; // where the C4 boxes were when the pointer went down on the drawing, until it goes up
   revision: number; // of the elements last checked for misplaced boxes
   guard?: Guard; // the elements of the levels above, put back when deleted
+  claimed?: boolean; // taken over for C4, until the frontmatter says so
+  plain?: boolean; // kept plain Excalidraw, until the frontmatter says so
+  keyWritten?: boolean; // the drawing's kind was written to its frontmatter
 }
 
 const ATTACH_RETRIES = 50;
@@ -72,11 +78,14 @@ export default class ExcalidrawC4Plugin extends Plugin {
   private states = new Map<ExcalidrawView, ViewState>();
   private retries = new WeakMap<ExcalidrawView, number>();
   private retryTimer = 0;
+  // While paused, keys and double-clicks are left to Excalidraw. Not saved: a restart resumes.
+  private paused = false;
 
   async onload() {
     const saved = (await this.loadData()) as Partial<Settings> | null;
     this.settings = { ...DEFAULT_SETTINGS, ...saved, shortcuts: loadShortcuts(saved?.shortcuts) };
     if (!isPanelPosition(this.settings.panelPosition)) this.settings.panelPosition = DEFAULT_SETTINGS.panelPosition;
+    this.settings.askKind = this.settings.askKind === true;
     this.settings.themes = loadThemes(saved);
     const migrated = !Array.isArray(saved?.themes) && this.settings.themes.some((t) => t.id === CUSTOM_THEME);
     this.settings.theme = validTheme(migrated ? CUSTOM_THEME : this.settings.theme, this.settings.themes);
@@ -84,6 +93,17 @@ export default class ExcalidrawC4Plugin extends Plugin {
     this.applyThemes();
     this.addSettingTab(new C4SettingTab(this.app, this));
 
+    // Other plugins drawing their own kind of diagram find this one here, and leave its drawings alone.
+    this.register(register());
+    this.registerEvent(this.app.metadataCache.on("changed", (file) => {
+      for (const s of this.states.values()) {
+        if (s.view.file !== file) continue;
+        s.claimed = false;
+        s.plain = false;
+        this.refreshPanel(s);
+        this.refreshHighlight(s);
+      }
+    }));
     this.registerEvent(this.app.workspace.on("layout-change", () => this.syncViews()));
     this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.syncViews()));
     this.registerEvent(this.app.workspace.on("file-open", () => this.syncViews()));
@@ -113,6 +133,31 @@ export default class ExcalidrawC4Plugin extends Plugin {
         this.withView(checking, (view) => this.promptRelationship(view), (view) => !!selectedPair(view)),
     });
     this.addCommand({
+      id: "use-for-c4",
+      name: "Use this drawing for C4 diagrams",
+      checkCallback: (checking) => {
+        const view = this.app.workspace.getActiveViewOfType(ItemView);
+        if (!isExcalidrawView(view) || !view.excalidrawAPI || this.ownerOfView(view) === "mine") return false;
+        if (!checking) void this.claim(view);
+        return true;
+      },
+    });
+    this.addCommand({
+      id: "keep-plain",
+      name: "Keep this drawing plain Excalidraw",
+      checkCallback: (checking) => {
+        const view = this.app.workspace.getActiveViewOfType(ItemView);
+        if (!isExcalidrawView(view) || !view.excalidrawAPI || this.kindOf(view) === PLAIN) return false;
+        if (!checking) void this.keepPlain(view);
+        return true;
+      },
+    });
+    this.addCommand({
+      id: "toggle-pause",
+      name: "Pause or resume C4 editing",
+      callback: () => this.togglePause(),
+    });
+    this.addCommand({
       id: "change-theme",
       name: "Change theme of the drawing",
       checkCallback: (checking) => this.withView(checking, (view) => this.chooseTheme(view)),
@@ -139,17 +184,97 @@ export default class ExcalidrawC4Plugin extends Plugin {
     });
   }
 
+  /** Whom the drawing belongs to: C4, another plugin drawing its own kind of diagram, or none yet. */
+  private ownerOfView(view: ExcalidrawView): Owner {
+    const s = this.states.get(view);
+    if (s?.plain) return "other";
+    if (s?.claimed) return "mine";
+    // Asking, C4 takes no drawing without being told to, as if another plugin of its sort were enabled.
+    const alone = isAlone() && !this.settings.askKind;
+    return ownerOf(this.kindOf(view), hasC4(view.excalidrawAPI?.getSceneElements() ?? []), alone);
+  }
+
+  /** The kind in the drawing's frontmatter, if any. */
+  private kindOf(view: ExcalidrawView): unknown {
+    return view.file ? this.app.metadataCache.getFileCache(view.file)?.frontmatter?.[MODE_KEY] : undefined;
+  }
+
+  /** Leaves the drawing to Excalidraw: its frontmatter says it is plain, so neither this plugin nor the others take it. */
+  private async keepPlain(view: ExcalidrawView) {
+    const s = this.states.get(view);
+    if (s) {
+      s.claimed = false;
+      s.plain = true;
+      this.refreshPanel(s);
+      this.refreshHighlight(s);
+    }
+    await this.writeKind(view, PLAIN);
+  }
+
+  private isMine(view: ExcalidrawView): boolean {
+    return this.ownerOfView(view) === "mine";
+  }
+
+  /** Takes the drawing over for C4: its frontmatter says so, for this plugin and the others. */
+  private async claim(view: ExcalidrawView) {
+    const s = this.states.get(view);
+    if (s) {
+      s.claimed = true;
+      s.plain = false;
+      this.refreshPanel(s);
+    }
+    await this.writeKind(view);
+  }
+
+  /** Writes the drawing's kind to its frontmatter; false when it could not. */
+  private async writeKind(view: ExcalidrawView, kind: string = MODE): Promise<boolean> {
+    if (!view.file) return false;
+    try {
+      await this.app.fileManager.processFrontMatter(view.file, (fm: Record<string, unknown>) => {
+        fm[MODE_KEY] = kind;
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Writes the kind of a C4 drawing to its frontmatter when it has none, for the other plugins drawing their own kind of
+   * diagram to leave it alone: once its first C4 element is drawn, or when one drawn before the kind was is open. Only
+   * when the drawing has no unsaved changes, which writing the file under it could interfere with.
+   */
+  private keepKind(s: ViewState, els: readonly El[]) {
+    if (s.keyWritten || !s.view.file || !hasC4(els)) return;
+    if (this.app.metadataCache.getFileCache(s.view.file)?.frontmatter?.[MODE_KEY]) return void (s.keyWritten = true);
+    if ((s.view as { isDirty?: () => boolean }).isDirty?.()) return;
+    s.keyWritten = true;
+    void this.writeKind(s.view).then((ok) => {
+      if (!ok) s.keyWritten = false;
+    });
+  }
+
+  /** Leaves keys and double-clicks to Excalidraw, in every drawing, or takes them back. */
+  private togglePause() {
+    this.paused = !this.paused;
+    for (const s of this.states.values()) {
+      this.refreshPanel(s);
+      this.refreshHighlight(s);
+    }
+  }
+
   /** The drawing in the active tab, while it is being edited rather than only viewed. */
   private editedView(): ExcalidrawView | null {
     const view = this.app.workspace.getActiveViewOfType(ItemView);
     if (!isExcalidrawView(view) || !view.excalidrawAPI) return null;
     const s = view.excalidrawAPI.getAppState();
-    return s.viewModeEnabled || s.editingTextElement ? null : view;
+    // Another plugin's drawing, or nobody's yet, keeps its keys and double-clicks for Excalidraw.
+    return s.viewModeEnabled || s.editingTextElement || !this.isMine(view) ? null : view;
   }
 
   /** Runs the shortcut of a key pressed on a drawing, instead of what Excalidraw would do with the key. */
   private onKey(e: KeyboardEvent) {
-    if (e.isComposing || e.repeat) return;
+    if (this.paused || e.isComposing || e.repeat) return;
     const view = this.editedView();
     const target = e.target instanceof HTMLElement ? e.target : null;
     if (!view || target?.closest("input, textarea, [contenteditable='true'], .modal-container")) return;
@@ -195,7 +320,8 @@ export default class ExcalidrawC4Plugin extends Plugin {
 
   /**
    * Adds what the selection asks for: a relationship between two selected elements, else an element of the level on the
-   * canvas, of the selected element's kind when the level takes it.
+   * canvas, of the selected element's kind when the level takes it. In the system context that is a person until the
+   * drawing has one, then a system.
    */
   private addByKey(view: ExcalidrawView) {
     const selected = selectedElements(view);
@@ -203,11 +329,14 @@ export default class ExcalidrawC4Plugin extends Plugin {
     if (selected.length > 2) return void new Notice("Select two elements to add a relationship between them.");
     const kinds = diagramInfo(view).kinds;
     const own = selected[0]?.data.kind;
-    const kind = own && kinds.includes(own) ? own : kinds.includes("system") ? "system" : kinds[0];
-    if (kind) this.promptElement(view, kind, false, kinds);
+    const kind = own && kinds.includes(own) ? own
+      : kinds.includes("person") && !hasKind(view, "person") ? "person"
+      : kinds.includes("system") ? "system" : kinds[0];
+    if (kind) this.promptElement(view, kind, false);
   }
 
   private onDoubleClick(e: MouseEvent) {
+    if (this.paused) return;
     const view = this.editedView();
     if (!view || !(e.target instanceof HTMLCanvasElement) || !view.contentEl.contains(e.target)) return;
     const api = view.excalidrawAPI!;
@@ -261,7 +390,8 @@ export default class ExcalidrawC4Plugin extends Plugin {
    * change and nothing is being dragged.
    */
   private checkCanvas(s: ViewState, els = s.api.getSceneElements()) {
-    if (s.drag) return;
+    if (s.drag || !this.isMine(s.view)) return;
+    this.keepKind(s, els);
     const state = s.api.getAppState();
     if (state.viewModeEnabled || state.editingTextElement) return;
     const revision = revisionOf(els);
@@ -324,7 +454,7 @@ export default class ExcalidrawC4Plugin extends Plugin {
     await this.saveData(this.settings);
     window.clearTimeout(this.looksTimer);
     this.looksTimer = window.setTimeout(() => {
-      for (const s of this.states.values()) if (!s.api.getAppState().viewModeEnabled) refreshLooks(s.view);
+      for (const s of this.states.values()) if (!s.api.getAppState().viewModeEnabled && this.isMine(s.view)) refreshLooks(s.view);
     }, 300);
   }
 
@@ -369,6 +499,7 @@ export default class ExcalidrawC4Plugin extends Plugin {
       zoomIn: () => this.zoomIn(view),
       zoomOut: () => this.zoomOut(view),
       theme: (at) => this.themeMenu(view, at),
+      togglePause: () => this.togglePause(),
     });
     const highlight = new Highlight();
     const s: ViewState = { view, api, panel, highlight, raf: 0, highlightRaf: 0, selection: null, viewMode: undefined, revision: NaN };
@@ -377,13 +508,14 @@ export default class ExcalidrawC4Plugin extends Plugin {
     s.unsubscribe = api.onChange?.((els, appState) => this.onSceneChange(s, els, appState));
     this.states.set(view, s);
     // Drawn in the colors of the types of element now, which may have changed since the drawing was last open.
-    if (!api.getAppState().viewModeEnabled) refreshLooks(view);
+    if (!api.getAppState().viewModeEnabled && this.isMine(view)) refreshLooks(view);
     this.refreshPanel(s);
     this.checkCanvas(s);
   }
 
   private detach(s: ViewState) {
     s.unsubscribe?.();
+    withdraw(s.view.contentEl, MODE);
     if (s.raf) window.cancelAnimationFrame(s.raf);
     if (s.highlightRaf) window.cancelAnimationFrame(s.highlightRaf);
     s.panel.destroy();
@@ -416,37 +548,52 @@ export default class ExcalidrawC4Plugin extends Plugin {
 
   private refreshHighlight(s: ViewState) {
     const state = s.api.getAppState();
-    s.highlight.update(state.viewModeEnabled ? [] : selectionShapes(s.view), state, s.view.contentEl);
+    const off = state.viewModeEnabled || this.paused || !this.isMine(s.view);
+    s.highlight.update(off ? [] : selectionShapes(s.view), state, s.view.contentEl);
   }
 
   private refreshPanel(s: ViewState) {
     protectStore(s.view);
-    const visible = this.settings.showPanel && !s.api.getAppState().viewModeEnabled;
+    // Only on C4's own drawings. On a drawing nobody's yet, a button taking it over instead, in the row the plugins
+    // drawing their own kind of diagram share.
+    const owner = this.ownerOfView(s.view);
+    const viewMode = !!s.api.getAppState().viewModeEnabled;
+    const visible = this.settings.showPanel && !viewMode && owner === "mine";
+    if (owner === "none" && !viewMode) offer(s.view.contentEl, MODE, "C4 diagrams", "Use this drawing for C4 diagrams", () => void this.claim(s.view), () => void this.keepPlain(s.view));
+    else withdraw(s.view.contentEl, MODE);
     s.panel.setVisible(visible);
     s.panel.setPosition(this.settings.panelPosition);
     if (visible) s.panel.update({
         pair: !!selectedPair(s.view),
         item: !!editableItem(s.view),
         relationship: !!selectedRelationship(s.view),
+        paused: this.paused,
         ...diagramInfo(s.view),
       });
   }
 
-  /** Runs the command on the active drawing; a command is only offered while one is open and it applies. */
+  /**
+   * Runs the command on the active drawing; a command is only offered while one is open, it applies, and the drawing is
+   * not another plugin's. On a drawing nobody's yet, it takes the drawing over for C4.
+   */
   private withView(checking: boolean, run: (view: ExcalidrawView) => void, applies?: (view: ExcalidrawView) => boolean): boolean {
     const view = this.app.workspace.getActiveViewOfType(ItemView);
     if (!isExcalidrawView(view) || !view.excalidrawAPI || (applies && !applies(view))) return false;
-    if (!checking) run(view);
+    const owner = this.ownerOfView(view);
+    if (owner === "other") return false;
+    if (!checking) {
+      if (owner === "none") void this.claim(view);
+      run(view);
+    }
     return true;
   }
 
-  /** The form adding an element; with `kinds`, it can switch between them. */
-  private promptElement(view: ExcalidrawView, initialKind: C4Kind, initiallyExternal: boolean, kinds: C4Kind[] = []) {
+  /** The form adding an element. */
+  private promptElement(view: ExcalidrawView, kind: C4Kind, initiallyExternal: boolean) {
     if (selectedElements(view).length > 1) {
       new Notice("With more than one element selected, only a relationship can be added: select two elements.");
       return;
     }
-    let kind = initialKind;
     if (!canAdd(view, kind)) {
       // Only the kinds of the level on the canvas: the others are added on their own level.
       const where = kind === "container" ? "a software system" : kind === "component" ? "a container" : null;
@@ -455,33 +602,7 @@ export default class ExcalidrawC4Plugin extends Plugin {
         : `${kind === "person" ? "People" : "Software systems"} are added on the System level: zoom out.`);
       return;
     }
-    let external = initiallyExternal;
-    let type: ContainerType = "generic";
-    const rows: [string, string][] = [];
-    const heading = () => `Add ${kindTitle(kind, external).toLowerCase()}`;
-    const modal = new FormModal(this.app, heading(), elementFields(kind, external), (v) => {
-      const metadata = cleanMetadata(rows);
-      const added = addElement(view, {
-        kind, ...(kind === "container" ? { type } : {}), external, name: v.name ?? "", technology: v.technology, description: v.description, metadata,
-      });
-      if (!added) new Notice(NO_EXCALIDRAW);
-    });
-    if (kind === "container") modal.before.push(typeToggle(() => type, (t) => (type = t)));
-    if (canBeExternal(kind)) modal.extras.push(externalToggle(() => external, (on) => {
-      external = on;
-      modal.setTitle(heading());
-    }));
-    modal.extras.push(metadataEditor(rows, () => modal.submit()));
-    // People and systems in the system context, which takes both: the form switches between them, as their fields are the same.
-    const choice: C4Kind[] = kinds.filter((k) => !hasTechnology(k));
-    if (choice.length > 1 && choice.includes(kind)) {
-      const options = choice.map((k) => ({ value: k, title: kindTitle(k), shape: shapeOf({ kind: k }) }));
-      modal.before.push(pictureToggle("Type", options, () => kind, (k) => {
-        kind = k;
-        modal.setTitle(heading());
-      }));
-    }
-    modal.open();
+    this.elementForm(view, "Add", { kind, name: "", external: initiallyExternal }, (data) => addElement(view, data));
   }
 
   private promptEdit(view: ExcalidrawView, item = selectedItem(view)) {
@@ -521,10 +642,15 @@ export default class ExcalidrawC4Plugin extends Plugin {
   }
 
   private promptEditElement(view: ExcalidrawView, { el, data }: Selected) {
+    this.elementForm(view, "Edit", data, (updated) => updateElement(view, el.id, updated));
+  }
+
+  /** The form of an element, the same for adding and editing it; `save` gets the element as the form leaves it. */
+  private elementForm(view: ExcalidrawView, verb: "Add" | "Edit", data: C4Element, save: (data: C4Element) => boolean) {
     useDrawingColors(view); // the colors the form shows
     let external = !!data.external;
     let type: ContainerType = isContainerType(data.type) ? data.type : "generic";
-    const heading = () => `Edit ${kindTitle(data.kind, external).toLowerCase()}`;
+    const heading = () => `${verb} ${kindTitle(data.kind, external).toLowerCase()}`;
     const values = { name: data.name, technology: data.technology ?? "", description: data.description ?? "" };
     const fields = elementFields(data.kind, external).map((f) => ({ ...f, value: values[f.key as keyof typeof values] }));
     const rows: [string, string][] = Object.entries(data.metadata ?? {});
@@ -534,11 +660,11 @@ export default class ExcalidrawC4Plugin extends Plugin {
       const technology = hasTechnology(data.kind) ? v.technology : undefined;
       const metadata = cleanMetadata(rows);
       useDrawingColors(view); // for its own colors, those that differ from its type's in the drawing's theme
-      const updated = updateElement(view, el.id, {
+      const saved = save({
         ...data, ...typed(), name: v.name ?? "", technology, description: v.description, metadata, look: ownLook(typed(), look),
       });
-      if (!updated) new Notice(NO_EXCALIDRAW);
-    }, "Save");
+      if (!saved) new Notice(NO_EXCALIDRAW);
+    }, verb === "Edit" ? "Save" : "Add");
     const colors = lookPickers(
       "Colors", "",
       () => lookOf({ ...typed(), look }),
@@ -634,7 +760,7 @@ interface Field {
 
 function elementFields(kind: C4Kind, external: boolean): Field[] {
   const fields: Field[] = [{ key: "name", name: "Name", placeholder: kindTitle(kind, external) }];
-  if (hasTechnology(kind)) fields.push({ key: "technology", name: "Technology", placeholder: "E.g. Spring Boot, PostgreSQL" });
+  if (hasTechnology(kind)) fields.push({ key: "technology", name: "Technology", placeholder: "E.g. ASP.NET, Spring Boot, PostgreSQL" });
   fields.push({ key: "description", name: "Description", multiline: true });
   return fields;
 }
@@ -803,6 +929,9 @@ const metadataEditor = (rows: [string, string][], submit: () => void) => (el: HT
 const reverseButton = (flip: () => void): HeaderButton => ({ icon: "arrow-left-right", label: "Reverse direction", onClick: flip });
 
 /** The C4 boxes among the elements. */
+/** Whether a drawing has anything of C4 in it: elements, their layers or ghosts. */
+const hasC4 = (els: readonly El[]): boolean => els.some((e) => !e.isDeleted && !!e.customData?.[KEY]);
+
 const boxesOf = (els: readonly El[]): El[] => els.filter((e) => !e.containerId && !e.isDeleted && elementData(e.customData));
 
 /** Changes whenever an element changes. */
@@ -843,6 +972,7 @@ class C4SettingTab extends PluginSettingTab {
     const settings = this.plugin.settings;
     if (key === "showPanel") settings.showPanel = !!value;
     else if (key === "panelPosition" && isPanelPosition(value)) settings.panelPosition = value;
+    else if (key === "askKind") settings.askKind = !!value;
     else if (key === "theme") {
       settings.theme = validTheme(value, settings.themes);
       return this.plugin.saveThemes();
@@ -853,6 +983,11 @@ class C4SettingTab extends PluginSettingTab {
   getSettingDefinitions(): SettingDefinitionItem[] {
     return [
       ...this.general(),
+      {
+        name: "Ask what a new drawing is for",
+        desc: "On a drawing without C4 elements that is not yet anybody's, offer C4 diagrams or plain Excalidraw instead of taking it over. With another plugin drawing its own kind of diagram enabled, the plugins always ask.",
+        control: { type: "toggle", key: "askKind" },
+      },
       {
         name: "Theme of new drawings",
         desc: "The colors of a drawing: a built-in theme or one of your own. Each drawing keeps its own, changed from the panel's theme menu or the command palette.",

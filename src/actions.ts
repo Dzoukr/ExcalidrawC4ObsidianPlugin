@@ -456,6 +456,11 @@ function copyPlace(scene: Scene, layer: DiagramId, data: C4Element, box: Box): V
   return freeSpot({ ...box, ...p }, outside ? [rect, ...scene.boxes(layer)] : scene.boxes(layer));
 }
 
+/** Whether the drawing has an element of the kind, on any layer. */
+export function hasKind(view: ExcalidrawView, kind: C4Element["kind"]): boolean {
+  return readScene(view.excalidrawAPI!.getSceneElements()).scene.hasKind(kind);
+}
+
 /** Whether the layer on the canvas takes the kind of element; false tells the user to zoom first. */
 export function canAdd(view: ExcalidrawView, kind: C4Element["kind"]): boolean {
   return diagramInfo(view).kinds.includes(kind);
