@@ -282,8 +282,11 @@ export const lookSignatureOf = (customData: Record<string, unknown> | undefined)
   return typeof v === "string" ? v : null;
 };
 
-/** Width of the outlines of boxes and of the parts of their shapes. */
-export const STROKE_WIDTH = 2;
+/** Width of the outlines of boxes and of the parts of their shapes: as in the C4 model's diagrams, about 1% of a box's width. */
+export const STROKE_WIDTH = 3;
+
+/** Width of relationship arrows and boundaries, thinner than the outlines of boxes as in the C4 model's diagrams. */
+export const LINE_WIDTH = 2;
 
 /**
  * The shape an element is drawn as, after the key of the C4 model's diagrams. The box carrying the data and the text is
@@ -451,7 +454,7 @@ export const partOf = (customData: Record<string, unknown> | undefined): string 
 };
 
 /** Version of the shapes, kept on their parts: parts drawn by an earlier one are drawn again. */
-export const SHAPE_VERSION = 7;
+export const SHAPE_VERSION = 8;
 
 export const shapeVersionOf = (customData: Record<string, unknown> | undefined): number => {
   const v = (customData?.[KEY] as { shape?: unknown } | undefined)?.shape;

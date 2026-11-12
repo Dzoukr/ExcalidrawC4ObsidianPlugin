@@ -7,7 +7,7 @@ import { Theme, colorsOf, themeOfNewDrawings } from "./themes";
 import {
   BOUNDARY_LABEL, BOUNDARY_PAD, Box, C4Element, C4Relationship, ELEMENT_WIDTH, KEY, MIN_HEIGHT, PADDING, RELATIONSHIP_COLOR, Vec, ViewKind, allowedKinds, arrowMidpoint,
   boundaryLabel, bounds, boxSize, canBeExternal, center, contains, edgePoint, elementData, fittedBoundary, laneLine, laneOffsets, normalOf, elementLabel, lookOf, isGhost, makeWay, nameText, FONT_SIZE, NAME_FONT_SIZE, lookSignature, lookSignatureOf, useColors,
-  overlaps, parentFor, parentKind, pushOut, relationshipData, wayBack, relationshipLabel, zoomView, nearestIn, boxStyle, partOf, shapeOf, shapeParts, corners, shapeVersionOf, type Ink, MISPLACED_LOOK, SHAPE_VERSION, STROKE_WIDTH,
+  overlaps, parentFor, parentKind, pushOut, relationshipData, wayBack, relationshipLabel, zoomView, nearestIn, boxStyle, partOf, shapeOf, shapeParts, corners, shapeVersionOf, type Ink, MISPLACED_LOOK, SHAPE_VERSION, STROKE_WIDTH, LINE_WIDTH,
 } from "./model";
 import type { Direction } from "./model";
 
@@ -712,7 +712,7 @@ function addArrow(ea: ExcalidrawAutomate, ltx: LayerTx, from: El, to: El, data: 
   Object.assign(ea.style, {
     strokeColor: RELATIONSHIP_COLOR,
     backgroundColor: "transparent",
-    strokeWidth: 1,
+    strokeWidth: LINE_WIDTH,
     strokeStyle: "dashed",
     roughness: s.currentItemRoughness,
     roundness: null,
@@ -920,7 +920,7 @@ function addBoundary(ea: ExcalidrawAutomate, ltx: LayerTx, b: Box, scope: C4Elem
     strokeColor: BOUNDARY_COLOR,
     backgroundColor: "transparent",
     fillStyle: "solid",
-    strokeWidth: 1,
+    strokeWidth: LINE_WIDTH,
     strokeStyle: "dashed",
     roughness: s.currentItemRoughness,
     roundness: null,
