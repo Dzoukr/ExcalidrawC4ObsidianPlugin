@@ -88,12 +88,14 @@ const textOf = (scene: Scene, e: El): El | undefined => {
   return ref ? scene.byId.get(ref.id) : undefined;
 };
 
-/** A ghost of an element moved by an offset, with the parts of its shape behind it and its text. */
+/** A ghost of an element moved by an offset, with the parts of its shape behind it, its text, and the bold name over that. */
 function moved(scene: Scene, e: El, d: Vec): El[] {
   const text = textOf(scene, e);
   const parts = scene.parts(e.id).map((p) => ghost(p, { x: p.x + d.x, y: p.y + d.y }));
+  const behind = parts.filter((p) => p.type !== "text");
+  const over = parts.filter((p) => p.type === "text");
   const g = ghost(e, { x: e.x + d.x, y: e.y + d.y, boundElements: text ? [{ type: "text", id: ghostTextId(text.id) }] : null });
-  return text ? [...parts, g, ghost(text, { x: text.x + d.x, y: text.y + d.y })] : [...parts, g];
+  return text ? [...behind, g, ghost(text, { x: text.x + d.x, y: text.y + d.y }), ...over] : [...behind, g, ...over];
 }
 
 /**

@@ -5,13 +5,12 @@ import { DiagramId, Scene, copiesOf, endOfLevel, endsOf, grid, levelsUpTo, newId
 import { LayerTx, readScene, selectionOf } from "./layertx";
 import {
   BOUNDARY_LABEL, BOUNDARY_PAD, Box, C4Element, C4Relationship, ELEMENT_WIDTH, KEY, MIN_HEIGHT, PADDING, RELATIONSHIP_COLOR, Vec, ViewKind, allowedKinds, arrowMidpoint,
-  boundaryLabel, bounds, boxSize, canBeExternal, center, contains, edgePoint, elementData, fittedBoundary, laneLine, laneOffsets, normalOf, elementLabel, lookOf, isGhost, makeWay,
+  boundaryLabel, bounds, boxSize, canBeExternal, center, contains, edgePoint, elementData, fittedBoundary, laneLine, laneOffsets, normalOf, elementLabel, lookOf, isGhost, makeWay, nameText, FONT_SIZE, NAME_FONT_SIZE,
   overlaps, parentFor, parentKind, pushOut, relationshipData, wayBack, relationshipLabel, zoomView, nearestIn, boxStyle, partOf, shapeOf, shapeParts, corners, shapeVersionOf, type Ink, MISPLACED_LOOK, SHAPE_VERSION, STROKE_WIDTH,
 } from "./model";
 import type { Direction } from "./model";
 
 const GAP = 120; // between an element and the one added below it
-const FONT_SIZE = 16;
 const RELATIONSHIP_FONT_SIZE = 14;
 const BOUNDARY_COLOR = "#444444";
 
@@ -279,7 +278,7 @@ function addBox(ea: ExcalidrawAutomate, ltx: LayerTx, data: C4Element, at: Vec, 
   const els = ea.getElements();
   const box = els.find((e) => e.id === id)!;
   const text = els.find((e) => e.containerId === id);
-  const size = text ? boxSize(text, shapeOf(data)) : { width: Math.max(ELEMENT_WIDTH, box.width), height: Math.max(MIN_HEIGHT, box.height) };
+  const size = text ? boxSize(withName(ea, text, text, data), shapeOf(data)) : { width: Math.max(ELEMENT_WIDTH, box.width), height: Math.max(MIN_HEIGHT, box.height) };
   Object.assign(box, { x: at.x, y: at.y, ...size, ...style, customData: { ...(box.customData ?? {}), [KEY]: data } });
   if (text) Object.assign(text, { x: at.x + (size.width - text.width) / 2, y: at.y + (size.height - text.height) / 2 });
   for (const el of els) ltx.add(el, layer);
@@ -298,16 +297,15 @@ function reshape(ea: ExcalidrawAutomate, ltx: LayerTx, boxId: string, data: C4El
   const own = old[0]?.groupIds?.[0];
   for (const p of old) ltx.remove(p.id);
   const parts = shapeParts(shapeOf(data), box);
-  const groupIds = [...(parts.length ? [own ?? newId()] : []), ...(box.groupIds ?? []).filter((g) => g !== own)];
+  const label = boundText(ltx, box);
+  const groupIds = [...(parts.length || label ? [own ?? newId()] : []), ...(box.groupIds ?? []).filter((g) => g !== own)];
   if (JSON.stringify(groupIds) !== JSON.stringify(box.groupIds ?? [])) {
     ltx.patch(box.id, { groupIds });
-    const text = boundText(ltx, box);
-    if (text) ltx.patch(text.id, { groupIds });
+    if (label) ltx.patch(label.id, { groupIds });
   }
   const look = lookOf(data);
   const marked = box.strokeColor === MISPLACED_LOOK.strokeColor;
   ltx.patch(box.id, { ...boxStyle(data), ...(marked ? { strokeColor: MISPLACED_LOOK.strokeColor } : { strokeWidth: STROKE_WIDTH, strokeStyle: "solid" }) });
-  const label = boundText(ltx, box);
   if (label && label.strokeColor !== look.text) ltx.patch(label.id, { strokeColor: look.text });
   const color: Record<Ink, string> = { outline: look.stroke, detail: look.text, body: look.background, none: "transparent" };
   for (const part of parts) {
@@ -333,17 +331,45 @@ function reshape(ea: ExcalidrawAutomate, ltx: LayerTx, boxId: string, data: C4El
     if (part.type === "line") el.polygon = closed;
     ltx.addBehind(el, box.id);
   }
+  if (label) ltx.addInFront(nameOver(ea, label, box, data, groupIds), label.id);
 }
 
-/** Redraws the boxes drawn before their shapes and looks were what they are now, such as a person without a head. */
+/** The name of an element, larger than the rest of the text of its box, over the room the text keeps for it at the top. */
+function nameOver(ea: ExcalidrawAutomate, label: El, box: El, data: C4Element, groupIds: string[]): El {
+  ea.clear();
+  Object.assign(ea.style, {
+    strokeColor: label.strokeColor, opacity: 100, angle: 0, fontFamily: label.fontFamily, fontSize: NAME_FONT_SIZE, textAlign: "center",
+  });
+  const name = ea.getElement(ea.addText(0, 0, nameText(data), { textAlign: "center" }));
+  return {
+    ...name,
+    x: box.x + box.width / 2 - name.width / 2,
+    y: label.y,
+    groupIds,
+    customData: { [KEY]: { part: box.id, shape: SHAPE_VERSION } },
+  };
+}
+
+/** The size of the text of a box with its name, which is larger, and may be wider. */
+function withName(ea: ExcalidrawAutomate, text: El, size: { width: number; height: number }, data: C4Element) {
+  ea.style.fontFamily = text.fontFamily;
+  ea.style.fontSize = NAME_FONT_SIZE;
+  return { width: Math.max(size.width, ea.measureText(nameText(data)).width), height: size.height };
+}
+
+/**
+ * Redraws the boxes drawn before their shapes, looks and text were what they are now, such as a person without a head,
+ * resizing them around their text.
+ */
 function completeShapes(ea: ExcalidrawAutomate, ltx: LayerTx) {
   const scene = ltx.scene();
   for (const layer of scene.diagrams()) {
     for (const b of scene.boxes(layer)) {
       const data = elementData(b.customData)!;
       const parts = scene.parts(b.id);
-      const current = parts.length === shapeParts(shapeOf(data), b).length && parts.every((p) => shapeVersionOf(p.customData) === SHAPE_VERSION);
-      if (!current || b.backgroundColor !== boxStyle(data).backgroundColor) reshape(ea, ltx, b.id, data);
+      const named = b.boundElements?.some((r) => r.type === "text") ? 1 : 0; // the bold name over its text
+      const current = parts.length === shapeParts(shapeOf(data), b).length + named && parts.every((p) => shapeVersionOf(p.customData) === SHAPE_VERSION);
+      if (!current || b.backgroundColor !== boxStyle(data).backgroundColor) restyle(ea, ltx, b.id, data);
     }
   }
 }
@@ -512,7 +538,7 @@ function restyle(ea: ExcalidrawAutomate, ltx: LayerTx, boxId: string, data: C4El
   if (text) {
     const label = elementLabel(data);
     const m = measure(ea, text, label);
-    const size = boxSize(m, shapeOf(data));
+    const size = boxSize(withName(ea, text, m, data), shapeOf(data));
     const x = c.x - size.width / 2;
     const y = c.y - size.height / 2;
     ltx.patch(box.id, { x, y, ...size });

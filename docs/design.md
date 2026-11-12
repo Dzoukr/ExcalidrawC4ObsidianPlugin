@@ -20,6 +20,8 @@ The shapes follow the key of the diagrams on c4model.com, white with the outline
 
 The box carrying the data and the text stays a rectangle, as Excalidraw only puts text in a rectangle, ellipse or diamond, and relationships are glued to it. Where it is no rectangle shape it is invisible, and the shape is drawn by **parts** behind it (`customData.c4.part`: the id of the box), grouped with the box and its text so they are selected, moved and deleted together. The plugin draws the parts again whenever it changes the box, moves them with it, ghosts them with it, guards them with it, and on its next change to the drawing redraws boxes drawn before their shape or look was what it is now: the parts keep the version of the shapes (`customData.c4.shape`).
 
+The name of an element is larger than the rest of its box's text, as in the C4 model's diagrams. Excalidraw draws a text in one size, so the name is a text of its own, also a part, over room the box's text keeps for it at the top: lines holding only a zero-width space, which nothing trims away.
+
 Only people and systems, the elements of the system context, say whether they are external. Containers and components are external as their system is: the form does not offer it, and making a system external or internal does the same to everything inside it.
 
 ## Done (0.1.0)

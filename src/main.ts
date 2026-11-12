@@ -418,7 +418,7 @@ export default class ExcalidrawC4Plugin extends Plugin {
     const choice: C4Kind[] = kinds.filter((k) => !hasTechnology(k));
     if (choice.length > 1 && choice.includes(kind)) {
       const options = choice.map((k) => ({ value: k, title: kindTitle(k), shape: shapeOf({ kind: k }) }));
-      modal.before.push(pictureToggle("Kind", options, () => kind, (k) => {
+      modal.before.push(pictureToggle("Type", options, () => kind, (k) => {
         kind = k;
         modal.setTitle(heading());
       }));

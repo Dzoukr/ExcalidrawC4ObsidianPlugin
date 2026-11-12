@@ -259,6 +259,19 @@ export class LayerTx {
     }
   }
 
+  /** Adds an element right in front of another one, in that one's layer. */
+  addInFront(el: El, id: string) {
+    if (this.tx.get(id)) return this.tx.addInFront(el, id);
+    for (const [layer, m] of this.hidden) {
+      if (!m.has(id)) continue;
+      const entries = [...m.entries()];
+      entries.splice(entries.findIndex(([k]) => k === id) + 1, 0, [el.id, el]);
+      this.hidden.set(layer, new Map(entries));
+      this.dirty = true;
+      return;
+    }
+  }
+
   /** Takes an element out of its layer. */
   remove(id: string) {
     if (this.tx.get(id)) {

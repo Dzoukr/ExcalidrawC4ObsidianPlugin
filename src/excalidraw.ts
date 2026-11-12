@@ -50,6 +50,7 @@ export type El = {
   fontSize?: number;
   textAlign?: string;
   verticalAlign?: string;
+  lineHeight?: number;
 };
 
 export interface AppState {
@@ -187,6 +188,16 @@ export class SceneTx {
     this.cur.set(el.id, el);
     const j = this.added.indexOf(id);
     this.added.splice(j < 0 ? this.added.length : j, 0, el.id);
+    this.changes++;
+  }
+
+  /** Adds the element right in front of another one, which may itself be added in this transaction. */
+  addInFront(el: El, id: string) {
+    const i = this.order.indexOf(id);
+    if (i >= 0) return this.insert([el], i + 1);
+    this.cur.set(el.id, el);
+    const j = this.added.indexOf(id);
+    this.added.splice(j < 0 ? this.added.length : j + 1, 0, el.id);
     this.changes++;
   }
 

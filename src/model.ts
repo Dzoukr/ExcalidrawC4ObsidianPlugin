@@ -148,13 +148,27 @@ export const boundaryLabel = (scope: Pick<C4Element, "kind" | "name">) =>
 
 /** Characters per line of an element's text, which keeps boxes about the same width. */
 export const WRAP = 24;
+export const FONT_SIZE = 16; // the text of a box
+export const NAME_FONT_SIZE = 20; // the name of an element, larger than the rest of the text of its box
+const NAME_WRAP = Math.floor((WRAP * FONT_SIZE) / NAME_FONT_SIZE); // as wide as the rest of the text
+/** A line of the text of a box holding room for the name: not empty, so that nothing trims it away, yet showing nothing. */
+export const ROOM_LINE = "\u200b";
 export const RELATIONSHIP_WRAP = 28;
 
-/** The text of an element's box: name, [kind: technology] and description, as in C4 diagrams. */
+/** The name of an element, wrapped: drawn larger than the rest of the text of its box, on its own. */
+export const nameText = (e: Pick<C4Element, "name">): string => wrap(e.name.trim() || "Unnamed", NAME_WRAP).join("\n");
+
+/** How many lines of the text of a box the name takes the room of, at the top. */
+export const nameRoom = (e: Pick<C4Element, "name">): number => Math.ceil((nameText(e).split("\n").length * NAME_FONT_SIZE) / FONT_SIZE);
+
+/**
+ * The text of an element's box, as in C4 diagrams: room for the name, which is drawn over it larger, then
+ * [kind: technology] and the description.
+ */
 export function elementLabel(e: C4Element, wrapAt = WRAP): string {
   const tech = hasTechnology(e.kind) ? e.technology?.trim() : "";
   const tag = `[${kindTitle(e.kind, e.external)}${tech ? `: ${tech}` : ""}]`;
-  const lines = [...wrap(e.name.trim() || "Unnamed", wrapAt), tag];
+  const lines = [...Array<string>(nameRoom(e)).fill(ROOM_LINE), tag];
   const description = e.description?.trim();
   if (description) lines.push("", ...wrap(description, wrapAt));
   return lines.join("\n");
@@ -372,7 +386,7 @@ export const partOf = (customData: Record<string, unknown> | undefined): string 
 };
 
 /** Version of the shapes, kept on their parts: parts drawn by an earlier one are drawn again. */
-export const SHAPE_VERSION = 4;
+export const SHAPE_VERSION = 6;
 
 export const shapeVersionOf = (customData: Record<string, unknown> | undefined): number => {
   const v = (customData?.[KEY] as { shape?: unknown } | undefined)?.shape;

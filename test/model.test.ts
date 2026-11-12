@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { SHAPE_VERSION, shapeDrawing, shapeVersionOf, boxStyle, partOf, shapeOf, shapeParts, cleanMetadata, nearestIn, ELEMENT_WIDTH, KEY, MIN_HEIGHT, PADDING, arrowMidpoint, boxSize, edgePoint, laneLine, laneOffsets, normalOf, rayExit, elementData, elementLabel, lookOf, relationshipData, relationshipLabel, wrap } from "../src/model.ts";
+import { FONT_SIZE, NAME_FONT_SIZE, ROOM_LINE, SHAPE_VERSION, nameRoom, nameText, shapeDrawing, shapeVersionOf, boxStyle, partOf, shapeOf, shapeParts, cleanMetadata, nearestIn, ELEMENT_WIDTH, KEY, MIN_HEIGHT, PADDING, arrowMidpoint, boxSize, edgePoint, laneLine, laneOffsets, normalOf, rayExit, elementData, elementLabel, lookOf, relationshipData, relationshipLabel, wrap } from "../src/model.ts";
 
 test("wrap breaks at word boundaries and keeps paragraphs", () => {
   assert.deepEqual(wrap("one two three four", 9), ["one two", "three", "four"]);
@@ -8,14 +8,16 @@ test("wrap breaks at word boundaries and keeps paragraphs", () => {
   assert.deepEqual(wrap("supercalifragilistic x", 5), ["supercalifragilistic", "x"]);
 });
 
-test("an element's label has its name, kind with technology and description", () => {
+const ROOM = `${ROOM_LINE}\n${ROOM_LINE}\n`; // the room for a name of one line
+
+test("an element's label has room for its name, kind with technology and description", () => {
   const label = elementLabel({ kind: "container", name: "API", technology: "ASP.NET", description: "Serves the app" });
-  assert.equal(label, "API\n[Container: ASP.NET]\n\nServes the app");
+  assert.equal(label, `${ROOM}[Container: ASP.NET]\n\nServes the app`);
 });
 
 test("only containers and components show technology", () => {
-  assert.equal(elementLabel({ kind: "system", name: "Billing", technology: "ignored" }), "Billing\n[Software System]");
-  assert.equal(elementLabel({ kind: "person", name: "Customer", external: true }), "Customer\n[External Person]");
+  assert.equal(elementLabel({ kind: "system", name: "Billing", technology: "ignored" }), `${ROOM}[Software System]`);
+  assert.equal(elementLabel({ kind: "person", name: "Customer", external: true }), `${ROOM}[External Person]`);
 });
 
 test("a relationship label defaults to Uses and shows technology in brackets", () => {
@@ -160,4 +162,15 @@ test("a picture of a shape draws a rounded box's own outline too", () => {
   const box = { x: 0, y: 0, width: 240, height: 150 };
   assert.equal(shapeDrawing("rounded", box).length, 1);
   assert.deepEqual(shapeDrawing("cylinder", box), shapeParts("cylinder", box));
+});
+
+test("the larger name is drawn over room kept for it at the top of the text of a box, at least as high", () => {
+  for (const name of ["API", "Internet Banking System With A Rather Long Name", " "]) {
+    const lines = nameText({ name }).split("\n").length;
+    assert.ok(nameRoom({ name }) * FONT_SIZE >= lines * NAME_FONT_SIZE, name);
+    const label = elementLabel({ kind: "system", name });
+    assert.ok(label.startsWith(Array(nameRoom({ name })).fill(ROOM_LINE).join("\n") + "\n["), name);
+  }
+  assert.equal(nameText({ name: " " }), "Unnamed");
+  assert.ok(ROOM_LINE.trim(), "nothing trims the room away");
 });
