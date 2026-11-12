@@ -224,6 +224,26 @@ export function makeWay(from: Box, to: Box) {
   };
 }
 
+/**
+ * The way back from `makeWay`: where a box drawn around the grown element `to` goes when the element shrinks back to
+ * `from`, as when an element added to a layer is copied one level up. Beyond an edge it moves back as far as the edge
+ * did; alongside the element it stays, but no further out than the element's own edge.
+ */
+export function wayBack(from: Box, to: Box) {
+  const axis = (c: number, f0: number, fSize: number, t0: number, tSize: number) => {
+    if (c >= t0 + tSize) return c - (t0 + tSize - (f0 + fSize));
+    if (c <= t0) return c - (t0 - f0);
+    return Math.min(f0 + fSize, Math.max(f0, c));
+  };
+  return (b: Box): Vec => {
+    const c = center(b);
+    return {
+      x: axis(c.x, from.x, from.width, to.x, to.width) - b.width / 2,
+      y: axis(c.y, from.y, from.height, to.y, to.height) - b.height / 2,
+    };
+  };
+}
+
 /** Whether two boxes overlap, or come closer than the gap. */
 export const overlaps = (a: Box, b: Box, gap = 0) =>
   a.x < b.x + b.width + gap && b.x < a.x + a.width + gap && a.y < b.y + b.height + gap && b.y < a.y + a.height + gap;
@@ -246,6 +266,24 @@ export const contains = (outer: Box, p: Vec) => p.x >= outer.x && p.x <= outer.x
 export const ELEMENT_WIDTH = 240;
 export const MIN_HEIGHT = 150;
 export const PADDING = 16;
+export const BOUNDARY_PAD = 40; // between a boundary and the elements in it
+export const BOUNDARY_LABEL = 56; // room for a boundary's label below the elements in it
+
+/**
+ * A boundary fitted to the elements in it: around them with room for its label at the bottom, never smaller than one
+ * element or its label. With nothing in it, it keeps its center.
+ */
+export function fittedBoundary(current: Box, inner: Box[], label?: { width: number }): Box {
+  const minWidth = Math.max(ELEMENT_WIDTH + 2 * BOUNDARY_PAD, (label?.width ?? 0) + 2 * BOUNDARY_PAD);
+  const minHeight = MIN_HEIGHT + 2 * BOUNDARY_PAD + BOUNDARY_LABEL;
+  const around = bounds(inner, BOUNDARY_PAD);
+  const base = around ? { ...around, height: around.height + BOUNDARY_LABEL } : current;
+  const c = center(base);
+  const width = around ? Math.max(minWidth, base.width) : minWidth;
+  const height = around ? Math.max(minHeight, base.height) : minHeight;
+  // Grown to the least size around its middle, so its elements stay centered in it.
+  return { x: c.x - width / 2, y: c.y - height / 2, width, height };
+}
 
 /** Size of an element's box around its text: C4 boxes look alike, so at least a fixed size. */
 export const boxSize = (text: { width: number; height: number }) => ({

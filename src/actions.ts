@@ -1,17 +1,15 @@
 import { AppState, El, ExcalidrawAutomate, ExcalidrawView, getEA } from "./excalidraw";
-import { DiagramId, Scene, grid, newId, nextSlot, row } from "./layers";
+import { DiagramId, Scene, grid, levelsUpTo, newId, nextSlot, row } from "./layers";
 import { LayerTx, readScene } from "./layertx";
 import {
-  Box, C4Element, C4Relationship, CONTEXT, ELEMENT_WIDTH, KEY, MIN_HEIGHT, PADDING, RELATIONSHIP_COLOR, Vec, ViewKind, allowedKinds, arrowMidpoint,
-  boundaryLabel, bounds, boxSize, center, edgePoint, elementData, laneLine, laneOffsets, normalOf, elementLabel, lookOf, isGhost, makeWay, overlaps, parentFor, relationshipData,
+  BOUNDARY_LABEL, BOUNDARY_PAD, Box, C4Element, C4Relationship, ELEMENT_WIDTH, KEY, MIN_HEIGHT, PADDING, RELATIONSHIP_COLOR, Vec, ViewKind, allowedKinds, arrowMidpoint,
+  boundaryLabel, bounds, boxSize, center, edgePoint, elementData, fittedBoundary, laneLine, laneOffsets, normalOf, elementLabel, lookOf, isGhost, makeWay, overlaps, parentFor, pushOut, relationshipData, wayBack,
   relationshipLabel, zoomView,
 } from "./model";
 
 const GAP = 120; // between an element and the one added below it
 const FONT_SIZE = 16;
 const RELATIONSHIP_FONT_SIZE = 14;
-const BOUNDARY_PAD = 40; // between a boundary and the elements in it
-const BOUNDARY_LABEL = 56; // room for the boundary's label below the elements in it
 const BOUNDARY_COLOR = "#444444";
 
 export interface Selected {
@@ -207,17 +205,38 @@ export function addElement(view: ExcalidrawView, element: C4Element): boolean {
     const v = scene.view(layer);
     const data: C4Element = { ...element, id: newId(), parent: parentFor(element.kind, v, v ? scene.parent(v.scope) : undefined) };
     if (!data.parent) delete data.parent;
-    id = addBox(ea, ltx, data, placeIn(view, scene, layer, data), layer).id;
+    const box = addBox(ea, ltx, data, placeIn(view, scene, layer, data), layer);
+    id = box.id;
     fitBoundary(ltx, layer);
-    // Its own layer: the system context for people and systems, the layer of its parent for the others.
-    const home = data.parent ? scene.diagramFor(data.parent) : CONTEXT;
-    if (home !== undefined && home !== layer) {
-      addBox(ea, ltx, data, slotIn(scene, home, data), home);
-      fitBoundary(ltx, home);
+    // Every level above, up to its own: the system context for people and systems, the layer of its parent for the
+    // others. In the same place relative to what is around it: each level down makes way for the element opened in
+    // it, so going up the place shrinks back with that element.
+    let at: Box = box;
+    let below = layer;
+    for (const up of levelsUpTo(scene, layer, data.parent)) {
+      const now = ltx.scene();
+      const scope = now.view(below)?.scope;
+      const scopeBox = scope && now.parentLayer(scope) === up ? now.boxIn(scope, up) : undefined;
+      const rect = now.boundary(below).rect;
+      if (scopeBox && rect) at = { ...at, ...wayBack(scopeBox, rect)(at) };
+      at = { ...at, ...copyPlace(now, up, data, at) };
+      addBox(ea, ltx, data, at, up);
+      fitBoundary(ltx, up);
+      below = up;
     }
   });
   if (added) view.excalidrawAPI!.updateScene({ appState: { selectedElementIds: { [id]: true } }, captureUpdate: "NEVER" });
   return added;
+}
+
+/** Where a copy of a box goes in another layer: as near the place given as there is room, on the right side of the boundary. */
+function copyPlace(scene: Scene, layer: DiagramId, data: C4Element, box: Box): Vec {
+  const v = scene.view(layer);
+  const rect = scene.boundary(layer).rect;
+  const outside = rect && !(v && data.parent === v.scope);
+  // Out of the boundary it does not belong in, then clear of the boxes there.
+  const p = outside && overlaps(box, rect, GAP / 2) ? pushOut(box, rect, GAP) : { x: box.x, y: box.y };
+  return freeSpot({ ...box, ...p }, outside ? [rect, ...scene.boxes(layer)] : scene.boxes(layer));
 }
 
 /** Whether the layer on the canvas takes the kind of element; false tells the user to zoom first. */
@@ -256,26 +275,25 @@ function slotIn(scene: Scene, layer: DiagramId, data: C4Element): Vec {
   return { x: Math.min(...column.map((b) => b.x)), y: Math.max(...column.map((b) => b.y + b.height)) + GAP };
 }
 
-/** Grows a layer's boundary around the scope's elements; the elements below and right of it make way. */
+/**
+ * Fits a layer's boundary to the scope's elements in it, growing or shrinking, and keeps the elements around it at
+ * their distance from its edges.
+ */
 function fitBoundary(ltx: LayerTx, layer: DiagramId) {
   const scene = ltx.scene();
   const v = scene.view(layer);
   const { rect, label } = scene.boundary(layer);
   if (!v || !rect) return;
   const inner = scene.boxes(layer).filter((b) => scene.element(scene.modelId(b)!)?.parent === v.scope);
-  const need = bounds(inner, BOUNDARY_PAD);
-  const grown = bounds(need ? [rect, { ...need, height: need.height + BOUNDARY_LABEL }] : [rect])!;
-  ltx.patch(rect.id, grown);
-  if (label) ltx.patch(label.id, { x: grown.x + BOUNDARY_PAD / 2, y: grown.y + grown.height - label.height - BOUNDARY_PAD / 4 });
-  const bottom = rect.y + rect.height;
-  const right = rect.x + rect.width;
-  const dy = grown.y + grown.height - bottom;
-  const dx = grown.x + grown.width - right;
+  const fitted = fittedBoundary(rect, inner, label);
+  const same = (["x", "y", "width", "height"] as const).every((k) => Math.abs(fitted[k] - rect[k]) < 0.5);
+  if (!same) ltx.patch(rect.id, fitted);
+  if (label) ltx.patch(label.id, { x: fitted.x + BOUNDARY_PAD / 2, y: fitted.y + fitted.height - label.height - BOUNDARY_PAD / 4 });
+  const way = makeWay(rect, fitted);
   for (const b of scene.boxes(layer)) {
     if (inner.includes(b)) continue;
-    const by = b.y >= bottom ? dy : 0;
-    const bx = b.x >= right ? dx : 0;
-    if (bx || by) moveBox(ltx, b.id, bx, by);
+    const d = way.move(b);
+    if (d.x || d.y) moveBox(ltx, b.id, d.x, d.y);
   }
   // Relationships carried down to the boundary keep meeting its edge.
   for (const b of rect.boundElements ?? []) if (b.type === "arrow") reroute(ltx, b.id);
@@ -500,6 +518,7 @@ export function zoomIn(view: ExcalidrawView): boolean {
     const scene = ltx.scene();
     const scope = scene.modelId(item.el)!;
     if (!ltx.hasLayer(scope)) createLayer(ea, ltx, scene, item.el, { ...item.data, id: scope }, kind);
+    else fitBoundary(ltx, scope);
     carryDown(ea, ltx, scope);
     return { layer: scope };
   });
@@ -530,7 +549,7 @@ function createLayer(ea: ExcalidrawAutomate, ltx: LayerTx, scene: Scene, scopeBo
 
   // The boundary takes the place of the scope's box, grown to hold its elements.
   const cell = { width: ELEMENT_WIDTH, height: MIN_HEIGHT };
-  const cols = Math.max(2, Math.min(3, Math.ceil(Math.sqrt(children.length))));
+  const cols = Math.max(1, Math.min(3, Math.ceil(Math.sqrt(children.length))));
   const rows = Math.max(1, Math.ceil(children.length / cols));
   const width = cols * cell.width + (cols - 1) * GAP + 2 * BOUNDARY_PAD;
   const height = rows * cell.height + (rows - 1) * GAP + 2 * BOUNDARY_PAD + BOUNDARY_LABEL;

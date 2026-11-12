@@ -210,6 +210,22 @@ export class Scene {
   }
 }
 
+/**
+ * The layers above a layer, up to and including the own layer of an element with that parent (the system context
+ * without one): where copies of an element added to the layer belong.
+ */
+export function levelsUpTo(scene: Scene, layer: DiagramId, parent: string | undefined): DiagramId[] {
+  const home = parent ? scene.diagramFor(parent) : CONTEXT;
+  if (home === undefined || home === layer) return [];
+  const out: DiagramId[] = [];
+  for (let l = layer, v = scene.view(l); v && out.length < 10; v = scene.view(l)) {
+    l = scene.parentLayer(v.scope);
+    out.push(l);
+    if (l === home) return out;
+  }
+  return [home]; // not above this layer: only its own
+}
+
 /** Where the next box goes in an area: below the lowest box in it, else at its top left corner. */
 export function nextSlot(boxes: Box[], area: Box | null, gap: number, pad: number): Vec {
   const inside = area ? boxes.filter((b) => contains(area, { x: b.x + b.width / 2, y: b.y + b.height / 2 })) : boxes;

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Scene, grid, nextSlot, row } from "../src/layers.ts";
-import { CONTEXT, KEY, allowedKinds, isGhost, makeWay, overlaps, parentFor, pushOut, storeData, zoomView } from "../src/model.ts";
+import { Scene, grid, levelsUpTo, nextSlot, row } from "../src/layers.ts";
+import { BOUNDARY_LABEL, BOUNDARY_PAD, CONTEXT, ELEMENT_WIDTH, KEY, MIN_HEIGHT, allowedKinds, fittedBoundary, isGhost, makeWay, overlaps, parentFor, pushOut, storeData, wayBack, zoomView } from "../src/model.ts";
 import { ghostId, ghostsFor } from "../src/ghosts.ts";
 import type { C4Element, ViewKind } from "../src/model.ts";
 import type { El } from "../src/excalidraw.ts";
@@ -204,4 +204,51 @@ test("a relationship carried down to a boundary shows as a ghost one level furth
   const carried = ghosts.find((e) => e.id === ghostId("carried"));
   assert.ok(carried, "the carried relationship is shown");
   assert.ok(ghosts.some((e) => e.id === ghostId("sb")), "with the boundary it goes to");
+});
+
+test("an element added on a level is copied to every level above it, up to its own", () => {
+  const scene = sceneOf({
+    [CONTEXT]: [box("shop", { kind: "system", id: "s" })],
+    s: [box("api", { kind: "container", id: "p", parent: "s" })],
+    p: [],
+  });
+  assert.deepEqual(levelsUpTo(scene, "p", undefined), ["s", CONTEXT]); // a person added among components
+  assert.deepEqual(levelsUpTo(scene, "p", "s"), ["s"]); // a container added among components
+  assert.deepEqual(levelsUpTo(scene, "p", "p"), []); // a component, at home
+  assert.deepEqual(levelsUpTo(scene, "s", undefined), [CONTEXT]);
+  assert.deepEqual(levelsUpTo(scene, CONTEXT, undefined), []);
+});
+
+test("going up a level, a place shrinks back with the element opened below", () => {
+  const from = { x: 0, y: 0, width: 100, height: 100 };
+  const to = { x: -50, y: -20, width: 300, height: 200 };
+  const way = makeWay(from, to);
+  const back = wayBack(from, to);
+  // Whatever made way going down comes back to where it was.
+  for (const b of [{ x: 200, y: 0, width: 50, height: 50 }, { x: -200, y: -200, width: 50, height: 50 }, { x: 25, y: 300, width: 50, height: 50 }]) {
+    const d = way.move(b);
+    assert.deepEqual(back({ ...b, x: b.x + d.x, y: b.y + d.y }), { x: b.x, y: b.y });
+  }
+  // Below the grown element, near its right side: below the element, near its right side.
+  const p = back({ x: 180, y: 400, width: 40, height: 40 });
+  assert.equal(p.y, 400 - 80);
+  assert.ok(p.x + 20 > 50 && p.x + 20 <= 100);
+});
+
+test("a boundary fits the elements in it, but is never smaller than one element", () => {
+  const big = { x: -500, y: -500, width: 2000, height: 2000 };
+  const one = { x: 0, y: 0, width: ELEMENT_WIDTH, height: MIN_HEIGHT };
+  // Shrinks around one element, with room for its label below.
+  assert.deepEqual(fittedBoundary(big, [one]), {
+    x: -BOUNDARY_PAD, y: -BOUNDARY_PAD, width: ELEMENT_WIDTH + 2 * BOUNDARY_PAD, height: MIN_HEIGHT + 2 * BOUNDARY_PAD + BOUNDARY_LABEL,
+  });
+  // Grows around two side by side.
+  const two = fittedBoundary(big, [one, { ...one, x: 400 }]);
+  assert.equal(two.width, 400 + ELEMENT_WIDTH + 2 * BOUNDARY_PAD);
+  // Empty: the least size, around where it was.
+  const empty = fittedBoundary({ x: 0, y: 0, width: 1000, height: 1000 }, []);
+  assert.deepEqual([empty.x + empty.width / 2, empty.y + empty.height / 2], [500, 500]);
+  assert.equal(empty.width, ELEMENT_WIDTH + 2 * BOUNDARY_PAD);
+  // A long label keeps it wide enough.
+  assert.equal(fittedBoundary(big, [one], { width: 500 }).width, 500 + 2 * BOUNDARY_PAD);
 });

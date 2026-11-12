@@ -54,7 +54,7 @@ The levels above stay in view around the layer, as **ghosts**: dimmed, locked co
 | Container layer of S | containers (inside the boundary), people, systems | S for containers |
 | Component layer of C | components (inside the boundary), containers, people, systems | C for components, C's system for containers |
 
-An element added outside its home layer (a person added to a container layer, a container added to a component layer) is also added to its home layer, so the system context always lists every person and system. The boundary grows around new boxes, and the boxes below and right of it make way.
+An element added below its home layer (a person added to a container or component layer, a container added to a component layer) is also added to every layer above, up to and including its home layer, so each level shows it and the system context lists every person and system. A copy keeps its place relative to what is around it: going up a level, the place shrinks back with the element opened below (the way back from making way), so what was below the boundary goes below the element's box, and what was beside it goes beside the box. It then moves out of a boundary it does not belong in and clear of the boxes there. The boundary fits the scope's elements in it, growing or shrinking, with room for its label and never smaller than one element; the boxes around it keep their distance from its edges. It is fitted again whenever the plugin adds to or edits the layer and on zooming into it.
 
 ### Zooming
 
