@@ -14,11 +14,14 @@ Draw [C4 model](https://c4model.com) diagrams in Excalidraw drawings in Obsidian
 
 Box text follows the C4 convention: name, `[Kind: technology]`, blank line, description.
 
+Only people and systems, the elements of the system context, say whether they are external. Containers and components are external as their system is: the form does not offer it, and making a system external or internal does the same to everything inside it.
+
 ## Done (0.1.0)
 
-- Commands to add each element kind, internal or external, through a small form. A new element goes below the selected one, or in the middle of the view.
+- Commands to add each element kind through a small form; people and systems can be external. A new element goes below the selected one, or in the middle of the view.
 - A command to add a relationship between two selected elements, with a toggle to reverse its direction.
-- A command to edit the selected element (name, technology, description, external) or relationship. The box is resized around its new text, keeping its center, and its relationships are straightened again.
+- A command to edit the selected element (name, technology, description, and external for people and systems) or relationship. The box is resized around its new text, keeping its center, and its relationships are straightened again.
+- Every element can have metadata: key: value pairs (`metadata` in its data), added, changed and removed in the add and edit forms. They are not drawn, and every box of the element shares them.
 
 ## Levels: one drawing, one layer on the canvas
 
@@ -46,22 +49,36 @@ The levels above stay in view around the layer, as **ghosts**: dimmed, locked co
 - One element can be drawn in several layers: every box with the same `id` is the same element. Editing one updates all of them and the boundary of its own layer.
 - Deleting a box removes it from its layer only. Drawings that are not C4 elements belong to the layer they were drawn on.
 
-### Adding elements
+### Editing a level
 
-| Layer | Can add | Parent |
+Each layer edits only its own level: the elements of its scope, inside the boundary. What is drawn around the boundary (people, systems, the other containers of the system) is there for context from the levels above, and is edited there.
+
+| Layer | Can add and edit | Parent |
 |---|---|---|
 | System context | people, systems | — |
-| Container layer of S | containers (inside the boundary), people, systems | S for containers |
-| Component layer of C | components (inside the boundary), containers, people, systems | C for components, C's system for containers |
+| Container layer of S | containers (inside the boundary) | S |
+| Component layer of C | components (inside the boundary) | C |
 
-An element added below its home layer (a person added to a container or component layer, a container added to a component layer) is also added to every layer above, up to and including its home layer, so each level shows it and the system context lists every person and system. A copy keeps its place relative to what is around it: going up a level, the place shrinks back with the element opened below (the way back from making way), so what was below the boundary goes below the element's box, and what was beside it goes beside the box. It then moves out of a boundary it does not belong in and clear of the boxes there. The boundary fits the scope's elements in it, growing or shrinking, with room for its label and never smaller than one element; the boxes around it keep their distance from its edges. It is fitted again whenever the plugin adds to or edits the layer and on zooming into it.
+- The panel offers only the kinds of the level, and the commands for the others say which level to go to.
+- The edit form, Enter and a double-click open only for an element of the level, or a relationship with an end there (or at the boundary); for the others a notice says to zoom out. A relationship can be added when one of its ends belongs to the level.
+- Only elements of the level are moved into another parent by dragging.
+- What comes from the levels above (the neighbours around the boundary, the relationships between them, and the boundary itself) cannot be deleted in the layer: it is put back, with the relationships glued to it, and a notice says to zoom out. It can still be moved.
+- The elements around the boundary come down from the levels above: as neighbours on zooming in, and with the relationships carried down. A neighbour stays only while a relationship ties it to the scope or to something inside it, in any layer, or to the boundary in this one: one that has none any more leaves the layer when the layer comes on the canvas (zooming in or out, which starts the undo history over), and shows again among the dimmed levels above. Until then it can be deleted by hand.
+- What is drawn in the layer is in full color; the levels above are shown dimmed around it. Grey is the color of external elements, a thick red dashed outline marks an element where it does not belong.
+
+The boundary fits the scope's elements in it, growing or shrinking, with room for its label and never smaller than one element; the boxes around it keep their distance from its edges. It is fitted again whenever the plugin adds to or edits the layer and on zooming into it.
+
+### Moving elements between parents
+
+- A container or component dragged out of its parent's boundary does not belong anywhere: its box is marked as an error (a thick red dashed outline) until it is back inside. So is anything else dragged into a boundary it does not belong in, such as a person or a sibling container. The marks follow every change, undo included, and are left out of the undo history. A boundary fitted again leaves a marked box out.
+- A container dropped onto an internal system, or a component onto an internal container (a box in the layer or a ghost of a level above), moves into it, as does one dropped into the boundary of a layer of the right kind. It goes into the new parent's layer, which is made first if there is none (as zooming in would make it), and leaves every other layer, where its parent stands for it now. Its relationships stay: in the new layer between it and the elements at their other ends, placed around the boundary when they are not there yet, and in every other layer between the elements standing for their ends. It takes its new system's external flag.
 
 ### Zooming
 
 - **Zoom in** on a selected internal system or container puts its layer on the canvas, first creating it if there is none: the boundary centered on the box, the children already known inside, and as neighbours the elements that have a relationship with it or with anything inside it. A neighbour already in the current layer keeps its place, moved out of the boundary's way; the others go above (they use the scope) or below (the scope uses them). Relationships among them are drawn too.
 - **Zoom out** puts the layer one level up on the canvas, with the element selected.
 - The view stays put unless the new layer does not fit in it.
-- The panel shows the current level (System, Container or Component) and offers only the kinds it takes.
+- The panel shows the current level (System, Container or Component).
 - Enter, or a double-click on a C4 element or relationship, opens its form instead of Excalidraw's text editing.
 
 ### Relationships
@@ -73,7 +90,9 @@ An element added below its home layer (a person added to a container or componen
 
 A relationship drawn in one layer is drawn in every other layer that shows its ends or the elements containing them, unless one is already there. So `User → Web app` drawn in the container layer of S puts `User → S` in the system context.
 
-Going down, each relationship of S one level up is carried into S's layer once, on zooming in: as an arrow between the element at the other end and S's boundary, with the same description and technology, to be moved onto the container it is about, edited, or joined by others. The relationship above remembers the layers it was carried into (`carried`), so a carried arrow deleted below stays deleted, and one added above later comes down on the next zoom. One already shown below, from or to anything inside S, is not carried. An arrow to the boundary follows the boundary as it grows, and shows as a ghost from the levels below.
+Going down, each relationship of S one level up is carried into S's layer on every zoom into it, when the layer does not show it: as an arrow between the element at the other end and S's boundary, with the same description and technology, to be moved onto the container it is about, edited, or joined by others. One shown below, from or to anything inside S or its boundary, is not carried; one deleted below by mistake comes back on the next zoom. An arrow to the boundary follows the boundary as it grows, and shows as a ghost from the levels below.
+
+Deleting a relationship between two elements deletes, in the other layers, every relationship it stands for: between the same two elements or anything inside them, carried arrows to a boundary included. Not while the layer still has another relationship between the two the same way. It is one undo step after the delete, and a notice says so.
 
 ## Next
 

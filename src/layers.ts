@@ -2,7 +2,7 @@
 // Pure: works on plain element data, no Obsidian or Excalidraw runtime.
 
 import type { El } from "./excalidraw";
-import { CONTEXT, boundaryData, contains, elementData, relationshipData } from "./model.ts"; // with its extension, for the tests running in Node
+import { CONTEXT, MISPLACED_LOOK, boundaryData, center, contains, elementData, lookOf, relationshipData } from "./model.ts"; // with its extension, for the tests running in Node
 import type { Box, C4Element, C4Relationship, C4View, Vec, ViewKind } from "./model.ts";
 
 /** A layer: the id of its scope, or CONTEXT for the system context. */
@@ -179,6 +179,18 @@ export class Scene {
     return [...this.data.entries()].filter(([, d]) => d.parent === scope).map(([id]) => id);
   }
 
+  /** Every element inside the element, at any depth. */
+  descendants(id: string): string[] {
+    return [...this.data.keys()].filter((e) => e !== id && this.ancestors(e).includes(id));
+  }
+
+  /** Whether an element with this parent is external: as its system is, at the top of its parents. */
+  inheritedExternal(parent: string | undefined): boolean {
+    if (!parent) return false;
+    const top = [parent, ...this.ancestors(parent)].pop()!;
+    return !!this.element(top)?.external;
+  }
+
   /**
    * The elements a diagram of the scope shows around its boundary: everything outside the scope that has a relationship
    * with the scope or with anything inside it, as the element at the diagram's level containing it.
@@ -224,6 +236,121 @@ export function levelsUpTo(scene: Scene, layer: DiagramId, parent: string | unde
     if (l === home) return out;
   }
   return [home]; // not above this layer: only its own
+}
+
+/**
+ * Whether an element belongs to the level of a layer, where alone it can be edited: in the system context everything,
+ * in a layer of a system or container the elements of its scope. The others are there for context, from the levels
+ * above.
+ */
+export function ofLevel(scene: Scene, layer: DiagramId, id: string): boolean {
+  const v = scene.view(layer);
+  return !v || scene.parent(id) === v.scope;
+}
+
+/** Whether one end of a relationship, a box or the boundary of the layer, belongs to the layer's level. */
+export function endOfLevel(scene: Scene, layer: DiagramId, elId: string | undefined): boolean {
+  const end = elId ? scene.byId.get(elId) : undefined;
+  if (!end) return false;
+  if (boundaryData(end.customData)?.boundary === layer) return true;
+  const id = scene.modelId(end);
+  return !!id && ofLevel(scene, layer, id);
+}
+
+/**
+ * The elements a relationship arrow goes between, by their ids: a box stands for its element, a boundary for the
+ * scope it is the boundary of. Null when an end is neither.
+ */
+export function endsOf(scene: Scene, arrow: El): [string, string] | null {
+  const end = (elId: string | undefined) => {
+    const e = elId ? scene.byId.get(elId) : undefined;
+    return e ? scene.modelId(e) ?? boundaryData(e.customData)?.boundary ?? null : null;
+  };
+  const from = end(arrow.startBinding?.elementId);
+  const to = end(arrow.endBinding?.elementId);
+  return from && to ? [from, to] : null;
+}
+
+/**
+ * The relationship arrows of the other layers that a relationship from one element to another stands for: from the
+ * element or anything inside it, to the other or anything inside that.
+ */
+export function relationshipsWithin(scene: Scene, from: string, to: string, except: DiagramId): El[] {
+  return [...scene.byId.values()].filter((a) => {
+    if (a.containerId || !relationshipData(a.customData) || scene.diagramOf(a) === except) return false;
+    const ends = endsOf(scene, a);
+    return !!ends && scene.within(ends[0], from) && scene.within(ends[1], to);
+  });
+}
+
+/**
+ * The boxes around the boundary of a layer that have nothing to do with its scope any more: no relationship with it or
+ * with anything inside it, in any layer, and no relationship to its boundary in this one. They belong in the view of
+ * the levels above, not in the layer.
+ */
+export function unrelated(scene: Scene, layer: DiagramId): El[] {
+  const v = scene.view(layer);
+  const rect = scene.boundary(layer).rect;
+  if (!v) return [];
+  const related = new Set(scene.neighbours(v.scope).map((n) => n.id));
+  for (const ref of rect?.boundElements ?? []) {
+    const arrow = ref.type === "arrow" ? scene.byId.get(ref.id) : undefined;
+    for (const end of [arrow?.startBinding?.elementId, arrow?.endBinding?.elementId]) {
+      const box = end ? scene.byId.get(end) : undefined;
+      const id = box && scene.modelId(box);
+      if (id) related.add(id);
+    }
+  }
+  return scene.boxes(layer).filter((b) => {
+    const id = scene.modelId(b)!;
+    return !ofLevel(scene, layer, id) && !scene.within(id, v.scope) && ![...related].some((r) => scene.within(id, r));
+  });
+}
+
+/**
+ * The elements of a layer that come from the levels above, and so cannot be deleted there: the boxes that do not
+ * belong to its level with their text, the relationships between them, and its boundary.
+ */
+export function guarded(scene: Scene, layer: DiagramId): Set<string> {
+  const stale = new Set(unrelated(scene, layer).map((b) => b.id));
+  const out = new Set<string>();
+  const withText = (e: El) => {
+    out.add(e.id);
+    for (const b of e.boundElements ?? []) if (b.type === "text") out.add(b.id);
+  };
+  for (const e of scene.elementsIn(layer)) {
+    if (e.containerId) continue;
+    if (boundaryData(e.customData)?.boundary === layer) out.add(e.id);
+    else if (elementData(e.customData)) {
+      if (!ofLevel(scene, layer, scene.modelId(e)!) && !stale.has(e.id)) withText(e);
+    } else if (relationshipData(e.customData)) {
+      if (![e.startBinding?.elementId, e.endBinding?.elementId].some((end) => endOfLevel(scene, layer, end))) withText(e);
+    }
+  }
+  return out;
+}
+
+/**
+ * The boxes of a layer that are where they do not belong: an element of the layer's scope outside its boundary, or
+ * anything else inside it. Goes by the center of the box.
+ */
+export function misplaced(scene: Scene, layer: DiagramId): El[] {
+  const v = scene.view(layer);
+  const rect = scene.boundary(layer).rect;
+  if (!v || !rect) return [];
+  return scene.boxes(layer).filter((b) => contains(rect, center(b)) !== (scene.parent(scene.modelId(b)!) === v.scope));
+}
+
+/** The changes that mark the misplaced boxes of a layer as errors, and give the others their own outline back. */
+export function markPatches(scene: Scene, layer: DiagramId): [string, Partial<El>][] {
+  const bad = new Set(misplaced(scene, layer).map((b) => b.id));
+  const out: [string, Partial<El>][] = [];
+  for (const b of scene.boxes(layer)) {
+    const marked = b.strokeColor === MISPLACED_LOOK.strokeColor;
+    if (bad.has(b.id) && !marked) out.push([b.id, { ...MISPLACED_LOOK }]);
+    else if (!bad.has(b.id) && marked) out.push([b.id, { strokeColor: lookOf(elementData(b.customData)!).stroke, strokeWidth: 1, strokeStyle: "solid" }]);
+  }
+  return out;
 }
 
 /** Where the next box goes in an area: below the lowest box in it, else at its top left corner. */

@@ -1,11 +1,11 @@
 import { App, ItemView, Modal, Notice, Plugin, PluginSettingTab, Setting, SettingDefinitionItem, setIcon } from "obsidian";
 import {
-  Selected, SelectedRelationship, addElement, addRelationship, canAdd, diagramInfo, isRelationship, itemAt, itemOf, reverseRelationship, selectedElements,
-  selectedItem, updateElement, updateRelationship, zoomIn, zoomOut,
+  Selected, SelectedRelationship, addElement, addRelationship, canAdd, canEdit, canRelate, deleteBelow, diagramInfo, dropBoxes, isRelationship, itemAt, itemOf, reverseRelationship,
+  selectedElements, selectedItem, updateElement, updateRelationship, zoomIn, zoomOut,
 } from "./actions";
-import { protectStore } from "./layertx";
-import { AppState, ExcalidrawAPI, ExcalidrawView, VIEW_TYPE_EXCALIDRAW, isExcalidrawView } from "./excalidraw";
-import { C4Kind, KINDS, boundaryData, elementData, hasTechnology, kindTitle } from "./model";
+import { Guard, guardLevels, protectStore, refreshCanvas } from "./layertx";
+import { AppState, El, ExcalidrawAPI, ExcalidrawView, VIEW_TYPE_EXCALIDRAW, isExcalidrawView } from "./excalidraw";
+import { C4Kind, KINDS, Vec, boundaryData, canBeExternal, cleanMetadata, elementData, hasTechnology, kindTitle, levelOf } from "./model";
 import { C4Panel, PANEL_POSITIONS, PanelPosition, isPanelPosition } from "./panel";
 
 const NO_EXCALIDRAW = "The Excalidraw plugin's scripting API is not available.";
@@ -25,6 +25,9 @@ interface ViewState {
   raf: number;
   selection: unknown; // the selection the panel shows, to refresh it only when the selection changes
   viewMode: boolean | undefined;
+  drag?: Map<string, Vec>; // where the C4 boxes were when the pointer went down on the drawing, until it goes up
+  revision: number; // of the elements last checked for misplaced boxes
+  guard?: Guard; // the elements of the levels above, put back when deleted
 }
 
 const ATTACH_RETRIES = 50;
@@ -48,9 +51,13 @@ export default class ExcalidrawC4Plugin extends Plugin {
     // Enter or a double-click on a C4 element or relationship opens its form instead of Excalidraw's text editing.
     this.registerDomEvent(window, "keydown", (e) => this.onEnter(e), { capture: true });
     this.registerDomEvent(window, "dblclick", (e) => this.onDoubleClick(e), { capture: true });
+    // A box dragged into another system or container moves into it; one dragged out of its boundary is marked.
+    this.registerDomEvent(window, "pointerdown", (e) => this.onPointerDown(e), { capture: true });
+    this.registerDomEvent(window, "pointerup", () => this.onPointerUp(), { capture: true });
+    this.registerDomEvent(window, "pointercancel", () => this.onPointerUp(), { capture: true });
 
     for (const kind of KINDS) {
-      for (const external of [false, true]) {
+      for (const external of canBeExternal(kind) ? [false, true] : [false]) {
         this.addCommand({
           id: `add-${external ? "external-" : ""}${kind}`,
           name: `Add ${kindTitle(kind, external).toLowerCase()}`,
@@ -62,12 +69,12 @@ export default class ExcalidrawC4Plugin extends Plugin {
       id: "add-relationship",
       name: "Add relationship between the two selected elements",
       checkCallback: (checking) =>
-        this.withView(checking, (view) => this.promptRelationship(view), (view) => selectedElements(view).length === 2),
+        this.withView(checking, (view) => this.promptRelationship(view), (view) => !!selectedPair(view)),
     });
     this.addCommand({
       id: "edit-selected",
       name: "Edit selected element or relationship",
-      checkCallback: (checking) => this.withView(checking, (view) => this.promptEdit(view), (view) => !!selectedItem(view)),
+      checkCallback: (checking) => this.withView(checking, (view) => this.promptEdit(view), (view) => !!editableItem(view)),
     });
     this.addCommand({
       id: "reverse-relationship",
@@ -121,6 +128,58 @@ export default class ExcalidrawC4Plugin extends Plugin {
     api.updateScene({ appState: { selectedElementIds: { [item.el.id]: true } }, captureUpdate: "NEVER" });
     // The selection reaches the app state only later.
     this.promptEdit(view, item);
+  }
+
+  private onPointerDown(e: PointerEvent) {
+    if (!(e.target instanceof Node)) return;
+    for (const s of this.states.values()) {
+      if (!s.view.contentEl.contains(e.target)) continue;
+      s.drag = new Map(boxesOf(s.api.getSceneElements()).map((b) => [b.id, { x: b.x, y: b.y }]));
+    }
+  }
+
+  private onPointerUp() {
+    for (const s of this.states.values()) {
+      const before = s.drag;
+      if (!before) continue;
+      s.drag = undefined;
+      // After Excalidraw has finished the drag.
+      window.setTimeout(() => this.afterDrag(s, before), 0);
+    }
+  }
+
+  private afterDrag(s: ViewState, before: Map<string, Vec>) {
+    if (!this.states.has(s.view) || s.api.getAppState().viewModeEnabled) return;
+    const moved = boxesOf(s.api.getSceneElements()).filter((b) => {
+      const was = before.get(b.id);
+      return was && (Math.abs(was.x - b.x) > 0.5 || Math.abs(was.y - b.y) > 0.5);
+    });
+    const messages = moved.length ? dropBoxes(s.view, moved.map((b) => b.id)) : [];
+    for (const message of messages) new Notice(message);
+    if (messages.length) this.refreshPanel(s);
+    this.checkCanvas(s);
+  }
+
+  /**
+   * Marks the boxes that are where they do not belong and fits the ghosts around what is drawn, whenever the elements
+   * change and nothing is being dragged.
+   */
+  private checkCanvas(s: ViewState, els = s.api.getSceneElements()) {
+    if (s.drag) return;
+    const state = s.api.getAppState();
+    if (state.viewModeEnabled || state.editingTextElement) return;
+    const revision = revisionOf(els);
+    if (revision === s.revision) return;
+    s.revision = revision;
+    const { guard, restored, deleted } = guardLevels(s.view, s.guard);
+    s.guard = guard;
+    // A relationship deleted here is deleted from the levels below too.
+    if (deleted.length && deleteBelow(s.view, deleted)) new Notice("Deleted the relationship from the levels below too.");
+    if (restored.length) {
+      const one = restored.length === 1;
+      new Notice(`${restored.join(", ")} ${one ? "belongs" : "belong"} to a level above: zoom out to delete ${one ? "it" : "them"}.`);
+    }
+    refreshCanvas(s.view);
   }
 
   private reverse(view: ExcalidrawView) {
@@ -195,11 +254,12 @@ export default class ExcalidrawC4Plugin extends Plugin {
       zoomIn: () => this.zoomIn(view),
       zoomOut: () => this.zoomOut(view),
     });
-    const s: ViewState = { view, api, panel, raf: 0, selection: null, viewMode: undefined };
+    const s: ViewState = { view, api, panel, raf: 0, selection: null, viewMode: undefined, revision: NaN };
     panel.mount(view.contentEl);
-    s.unsubscribe = api.onChange?.((_els, appState) => this.onSceneChange(s, appState));
+    s.unsubscribe = api.onChange?.((els, appState) => this.onSceneChange(s, els, appState));
     this.states.set(view, s);
     this.refreshPanel(s);
+    this.checkCanvas(s);
   }
 
   private detach(s: ViewState) {
@@ -208,8 +268,12 @@ export default class ExcalidrawC4Plugin extends Plugin {
     s.panel.destroy();
   }
 
-  /** Excalidraw reports every change, even a pointer move: the panel follows only the selection and view mode. */
-  private onSceneChange(s: ViewState, appState: AppState) {
+  /**
+   * Excalidraw reports every change, even a pointer move: the panel follows only the selection and view mode, the marks
+   * of misplaced boxes only the elements.
+   */
+  private onSceneChange(s: ViewState, els: readonly El[], appState: AppState) {
+    if (!s.drag && revisionOf(els) !== s.revision) window.requestAnimationFrame(() => this.checkCanvas(s));
     if (appState.selectedElementIds === s.selection && appState.viewModeEnabled === s.viewMode) return;
     s.selection = appState.selectedElementIds;
     s.viewMode = appState.viewModeEnabled;
@@ -227,8 +291,8 @@ export default class ExcalidrawC4Plugin extends Plugin {
     s.panel.setVisible(visible);
     s.panel.setPosition(this.settings.panelPosition);
     if (visible) s.panel.update({
-        pair: selectedElements(s.view).length === 2,
-        item: !!selectedItem(s.view),
+        pair: !!selectedPair(s.view),
+        item: !!editableItem(s.view),
         relationship: !!selectedRelationship(s.view),
         ...diagramInfo(s.view),
       });
@@ -244,25 +308,38 @@ export default class ExcalidrawC4Plugin extends Plugin {
 
   private promptElement(view: ExcalidrawView, kind: C4Kind, initiallyExternal: boolean) {
     if (!canAdd(view, kind)) {
-      const where = kind === "container" ? "a software system" : "a container";
-      new Notice(`${kindTitle(kind)}s belong in a diagram of ${where}: select one and zoom in.`);
+      // Only the kinds of the level on the canvas: the others are added on their own level.
+      const where = kind === "container" ? "a software system" : kind === "component" ? "a container" : null;
+      new Notice(where
+        ? `${kindTitle(kind)}s are added on the ${levelOf(kind)} level: select ${where} one level up and zoom in.`
+        : `${kind === "person" ? "People" : "Software systems"} are added on the System level: zoom out.`);
       return;
     }
     let external = initiallyExternal;
+    const rows: [string, string][] = [];
     const heading = () => `Add ${kindTitle(kind, external).toLowerCase()}`;
     const modal = new FormModal(this.app, heading(), elementFields(kind, external), (v) => {
-      const added = addElement(view, { kind, external, name: v.name ?? "", technology: v.technology, description: v.description });
+      const metadata = cleanMetadata(rows);
+      const added = addElement(view, { kind, external, name: v.name ?? "", technology: v.technology, description: v.description, metadata });
       if (!added) new Notice(NO_EXCALIDRAW);
     });
-    modal.extra = externalToggle(() => external, (on) => {
+    if (canBeExternal(kind)) modal.extras.push(externalToggle(() => external, (on) => {
       external = on;
       modal.setTitle(heading());
-    });
+    }));
+    modal.extras.push(metadataEditor(rows, () => modal.submit()));
     modal.open();
   }
 
   private promptEdit(view: ExcalidrawView, item = selectedItem(view)) {
     if (!item) return;
+    if (!canEdit(view, item)) {
+      // Shown here for context, from a level above.
+      const what = isRelationship(item) ? "This relationship" : item.data.name.trim() || "This element";
+      const where = isRelationship(item) ? "a level above" : `the ${levelOf(item.data.kind)} level`;
+      new Notice(`${what} belongs to ${where}: zoom out to edit it.`);
+      return;
+    }
     if (isRelationship(item)) this.promptEditRelationship(view, item);
     else this.promptEditElement(view, item);
   }
@@ -272,15 +349,19 @@ export default class ExcalidrawC4Plugin extends Plugin {
     const heading = () => `Edit ${kindTitle(data.kind, external).toLowerCase()}`;
     const values = { name: data.name, technology: data.technology ?? "", description: data.description ?? "" };
     const fields = elementFields(data.kind, external).map((f) => ({ ...f, value: values[f.key as keyof typeof values] }));
+    const rows: [string, string][] = Object.entries(data.metadata ?? {});
     const modal = new FormModal(this.app, heading(), fields, (v) => {
       const technology = hasTechnology(data.kind) ? v.technology : undefined;
-      const updated = updateElement(view, el.id, { ...data, external, name: v.name ?? "", technology, description: v.description });
+      const metadata = cleanMetadata(rows);
+      const updated = updateElement(view, el.id, { ...data, external, name: v.name ?? "", technology, description: v.description, metadata });
       if (!updated) new Notice(NO_EXCALIDRAW);
     }, "Save");
-    modal.extra = externalToggle(() => external, (on) => {
+    // Containers and components are external as their system is.
+    if (canBeExternal(data.kind)) modal.extras.push(externalToggle(() => external, (on) => {
       external = on;
       modal.setTitle(heading());
-    });
+    }));
+    modal.extras.push(metadataEditor(rows, () => modal.submit()));
     modal.open();
   }
 
@@ -315,6 +396,10 @@ export default class ExcalidrawC4Plugin extends Plugin {
     // The element selected first is where the relationship starts, unless reversed.
     const [a, b] = selectedElements(view);
     if (!a || !b) return;
+    if (!canRelate(view, a, b)) {
+      new Notice("Both elements belong to a level above: zoom out to connect them.");
+      return;
+    }
     let reversed = false;
     const ends = (): [Selected, Selected] => (reversed ? [b, a] : [a, b]);
     const title = () => {
@@ -361,13 +446,78 @@ const externalToggle = (get: () => boolean, set: (on: boolean) => void) => (el: 
     .addToggle((t) => t.setValue(get()).onChange(set));
 };
 
+/**
+ * The form's metadata of an element, as key: value rows next to its name like the other fields, edited in place: a
+ * row is added with the button below them and removed with its own. Enter submits the form.
+ */
+const metadataEditor = (rows: [string, string][], submit: () => void) => (el: HTMLElement) => {
+  const setting = new Setting(el).setName("Metadata").setClass("c4-field").setClass("c4-metadata");
+  const list = setting.controlEl.createDiv({ cls: "c4-metadata-rows" });
+  const render = (focus?: number) => {
+    list.empty();
+    rows.forEach((row, i) => {
+      const line = list.createDiv({ cls: "c4-metadata-row" });
+      const input = (part: 0 | 1, placeholder: string) => {
+        const field = line.createEl("input", { type: "text", cls: `c4-metadata-${part ? "value" : "key"}`, attr: { placeholder } });
+        field.value = row[part];
+        field.addEventListener("input", () => (row[part] = field.value));
+        field.addEventListener("keydown", (e) => {
+          if (e.key !== "Enter" || e.isComposing) return;
+          e.preventDefault();
+          submit();
+        });
+        return field;
+      };
+      const key = input(0, "Key");
+      line.createSpan({ cls: "c4-metadata-colon", text: ":" });
+      input(1, "Value");
+      const remove = line.createDiv({ cls: "clickable-icon", attr: { "aria-label": "Remove", role: "button" } });
+      setIcon(remove, "x");
+      remove.addEventListener("click", () => {
+        rows.splice(i, 1);
+        render();
+      });
+      if (i === focus) key.focus();
+    });
+  };
+  render();
+  setting.addButton((b) =>
+    b.setIcon("plus").setButtonText("Add").onClick(() => {
+      rows.push(["", ""]);
+      render(rows.length - 1);
+    }),
+  );
+};
+
 /** The form's button that turns a relationship the other way round; the form's title shows which way it goes. */
 const reverseButton = (flip: () => void): HeaderButton => ({ icon: "arrow-left-right", label: "Reverse direction", onClick: flip });
 
-/** The one selected relationship. */
+/** The C4 boxes among the elements. */
+const boxesOf = (els: readonly El[]): El[] => els.filter((e) => !e.containerId && !e.isDeleted && elementData(e.customData));
+
+/** Changes whenever an element changes. */
+function revisionOf(els: readonly El[]): number {
+  let r = els.length;
+  for (const e of els) r = (r * 31 + (e.version ?? 0)) | 0;
+  return r;
+}
+
+/** The one selected relationship, when it can be edited in the layer on the canvas. */
 function selectedRelationship(view: ExcalidrawView): SelectedRelationship | null {
-  const item = selectedItem(view);
+  const item = editableItem(view);
   return item && isRelationship(item) ? item : null;
+}
+
+/** The one selected element or relationship, when it can be edited in the layer on the canvas. */
+function editableItem(view: ExcalidrawView): Selected | SelectedRelationship | null {
+  const item = selectedItem(view);
+  return item && canEdit(view, item) ? item : null;
+}
+
+/** The two selected elements, when they can be connected in the layer on the canvas. */
+function selectedPair(view: ExcalidrawView): [Selected, Selected] | null {
+  const [a, b, ...rest] = selectedElements(view);
+  return a && b && !rest.length && canRelate(view, a, b) ? [a, b] : null;
 }
 
 class C4SettingTab extends PluginSettingTab {
@@ -412,7 +562,7 @@ interface HeaderButton {
 /** A small form: Enter submits, Ctrl+Enter in a multi-line field. */
 class FormModal extends Modal {
   private readonly values: Record<string, string> = {};
-  extra?: (el: HTMLElement) => void; // more settings below the fields
+  readonly extras: ((el: HTMLElement) => void)[] = []; // more settings below the fields
   headerButton?: HeaderButton;
   private headerEl?: HTMLElement;
 
@@ -429,6 +579,7 @@ class FormModal extends Modal {
 
   onOpen() {
     this.setTitle(this.heading);
+    this.modalEl.addClass("c4-form");
     const hb = this.headerButton;
     if (hb) {
       const b = (this.headerEl = this.modalEl.createDiv({
@@ -456,7 +607,7 @@ class FormModal extends Modal {
     }
     let first: HTMLElement | null = null;
     for (const f of this.fields) {
-      const setting = new Setting(this.contentEl).setName(f.name);
+      const setting = new Setting(this.contentEl).setName(f.name).setClass("c4-field");
       const wire = (input: HTMLElement) => {
         first ??= input;
         input.addEventListener("keydown", (e: KeyboardEvent) => {
@@ -468,7 +619,7 @@ class FormModal extends Modal {
       if (f.multiline) {
         setting.addTextArea((t) => {
           t.setValue(this.values[f.key] ?? "").setPlaceholder(f.placeholder ?? "").onChange((v) => (this.values[f.key] = v));
-          t.inputEl.rows = 3;
+          t.inputEl.rows = 4;
           wire(t.inputEl);
         });
       } else {
@@ -478,7 +629,7 @@ class FormModal extends Modal {
         });
       }
     }
-    this.extra?.(this.contentEl);
+    for (const extra of this.extras) extra(this.contentEl);
     new Setting(this.contentEl).addButton((b) => b.setButtonText(this.submitText).setCta().onClick(() => this.submit()));
     (first as HTMLElement | null)?.focus();
   }
@@ -488,7 +639,7 @@ class FormModal extends Modal {
     this.contentEl.empty();
   }
 
-  private submit() {
+  submit() {
     this.close();
     this.onSubmit(this.values);
   }

@@ -1,10 +1,11 @@
 import { AppState, El, ExcalidrawAutomate, ExcalidrawView, getEA } from "./excalidraw";
-import { DiagramId, Scene, grid, levelsUpTo, newId, nextSlot, row } from "./layers";
+import { ghostSource } from "./ghosts";
+import { DiagramId, Scene, endOfLevel, endsOf, grid, levelsUpTo, newId, nextSlot, ofLevel, relationshipsWithin, row, unrelated } from "./layers";
 import { LayerTx, readScene } from "./layertx";
 import {
   BOUNDARY_LABEL, BOUNDARY_PAD, Box, C4Element, C4Relationship, ELEMENT_WIDTH, KEY, MIN_HEIGHT, PADDING, RELATIONSHIP_COLOR, Vec, ViewKind, allowedKinds, arrowMidpoint,
-  boundaryLabel, bounds, boxSize, center, edgePoint, elementData, fittedBoundary, laneLine, laneOffsets, normalOf, elementLabel, lookOf, isGhost, makeWay, overlaps, parentFor, pushOut, relationshipData, wayBack,
-  relationshipLabel, zoomView,
+  boundaryLabel, bounds, boxSize, canBeExternal, center, contains, edgePoint, elementData, fittedBoundary, laneLine, laneOffsets, normalOf, elementLabel, lookOf, isGhost, makeWay,
+  overlaps, parentFor, parentKind, pushOut, relationshipData, wayBack, relationshipLabel, zoomView,
 } from "./model";
 
 const GAP = 120; // between an element and the one added below it
@@ -85,6 +86,23 @@ export function diagramInfo(view: ExcalidrawView): DiagramInfo {
     zoomIn: !!item && !isRelationship(item) && !!zoomView(item.data),
     zoomOut: v ? levelName(scene, scene.parentLayer(v.scope)) : null,
   };
+}
+
+/**
+ * Whether an element or relationship can be edited in the layer on the canvas: an element of its level, or a
+ * relationship with an end there.
+ */
+export function canEdit(view: ExcalidrawView, item: Selected | SelectedRelationship): boolean {
+  const { scene, current } = readScene(view.excalidrawAPI!.getSceneElements());
+  if (isRelationship(item)) return [item.el.startBinding?.elementId, item.el.endBinding?.elementId].some((e) => endOfLevel(scene, current, e));
+  const id = scene.modelId(item.el);
+  return !!id && ofLevel(scene, current, id);
+}
+
+/** Whether two elements can be connected in the layer on the canvas: one of them belongs to its level. */
+export function canRelate(view: ExcalidrawView, a: Selected, b: Selected): boolean {
+  const { scene, current } = readScene(view.excalidrawAPI!.getSceneElements());
+  return [a.el.id, b.el.id].some((e) => endOfLevel(scene, current, e));
 }
 
 /** The C4 level a layer is on. */
@@ -205,9 +223,10 @@ export function addElement(view: ExcalidrawView, element: C4Element): boolean {
     const v = scene.view(layer);
     const data: C4Element = { ...element, id: newId(), parent: parentFor(element.kind, v, v ? scene.parent(v.scope) : undefined) };
     if (!data.parent) delete data.parent;
+    if (!canBeExternal(data.kind)) data.external = scene.inheritedExternal(data.parent);
     const box = addBox(ea, ltx, data, placeIn(view, scene, layer, data), layer);
     id = box.id;
-    fitBoundary(ltx, layer);
+    fitBoundary(ltx, layer, [box.id]);
     // Every level above, up to its own: the system context for people and systems, the layer of its parent for the
     // others. In the same place relative to what is around it: each level down makes way for the element opened in
     // it, so going up the place shrinks back with that element.
@@ -220,8 +239,8 @@ export function addElement(view: ExcalidrawView, element: C4Element): boolean {
       const rect = now.boundary(below).rect;
       if (scopeBox && rect) at = { ...at, ...wayBack(scopeBox, rect)(at) };
       at = { ...at, ...copyPlace(now, up, data, at) };
-      addBox(ea, ltx, data, at, up);
-      fitBoundary(ltx, up);
+      const copy = addBox(ea, ltx, data, at, up);
+      fitBoundary(ltx, up, [copy.id]);
       below = up;
     }
   });
@@ -277,18 +296,22 @@ function slotIn(scene: Scene, layer: DiagramId, data: C4Element): Vec {
 
 /**
  * Fits a layer's boundary to the scope's elements in it, growing or shrinking, and keeps the elements around it at
- * their distance from its edges.
+ * their distance from its edges. An element of the scope dragged out of the boundary stays out, as an error, unless
+ * it was just put there by the plugin (`placed`).
  */
-function fitBoundary(ltx: LayerTx, layer: DiagramId) {
+function fitBoundary(ltx: LayerTx, layer: DiagramId, placed: string[] = []) {
   const scene = ltx.scene();
   const v = scene.view(layer);
   const { rect, label } = scene.boundary(layer);
   if (!v || !rect) return;
-  const inner = scene.boxes(layer).filter((b) => scene.element(scene.modelId(b)!)?.parent === v.scope);
+  const inner = scene.boxes(layer).filter(
+    (b) => scene.element(scene.modelId(b)!)?.parent === v.scope && (placed.includes(b.id) || contains(rect, center(b))),
+  );
   const fitted = fittedBoundary(rect, inner, label);
   const same = (["x", "y", "width", "height"] as const).every((k) => Math.abs(fitted[k] - rect[k]) < 0.5);
   if (!same) ltx.patch(rect.id, fitted);
-  if (label) ltx.patch(label.id, { x: fitted.x + BOUNDARY_PAD / 2, y: fitted.y + fitted.height - label.height - BOUNDARY_PAD / 4 });
+  const labelAt = label && { x: fitted.x + BOUNDARY_PAD / 2, y: fitted.y + fitted.height - label.height - BOUNDARY_PAD / 4 };
+  if (label && labelAt && (Math.abs(labelAt.x - label.x) >= 0.5 || Math.abs(labelAt.y - label.y) >= 0.5)) ltx.patch(label.id, labelAt);
   const way = makeWay(rect, fitted);
   for (const b of scene.boxes(layer)) {
     if (inner.includes(b)) continue;
@@ -323,7 +346,10 @@ export function updateElement(view: ExcalidrawView, boxId: string, data: C4Eleme
       id = newId();
       copies = [box];
     }
-    for (const b of copies) restyle(ea, ltx, b.id, { ...data, id });
+    // Only the elements of the system context say whether they are external; the ones inside take it from them.
+    const external = canBeExternal(data.kind) ? !!data.external : scene.inheritedExternal(data.parent);
+    for (const b of copies) restyle(ea, ltx, b.id, { ...data, id, external });
+    if (copies.length === scene.boxesOf(id).length) passExternal(ea, ltx, scene, id, external);
     const own = scene.diagramFor(id);
     const label = own ? scene.boundary(own).label : undefined;
     if (own && label) {
@@ -352,8 +378,18 @@ function restyle(ea: ExcalidrawAutomate, ltx: LayerTx, boxId: string, data: C4El
       ...textOf(label), ...m, strokeColor: look.text, x: x + (size.width - m.width) / 2, y: y + (size.height - m.height) / 2,
     });
   }
-  ltx.patch(box.id, { backgroundColor: look.background, strokeColor: look.stroke, customData: { ...(box.customData ?? {}), [KEY]: data } });
+  ltx.patch(box.id, {
+    backgroundColor: look.background, strokeColor: look.stroke, strokeWidth: 1, strokeStyle: "solid", customData: { ...(box.customData ?? {}), [KEY]: data },
+  });
   for (const b of box.boundElements ?? []) if (b.type === "arrow") reroute(ltx, b.id);
+}
+
+/** Makes everything inside an element external or internal with it, in every layer. */
+function passExternal(ea: ExcalidrawAutomate, ltx: LayerTx, scene: Scene, id: string, external: boolean) {
+  for (const d of scene.descendants(id)) {
+    if (!!scene.element(d)?.external === external) continue;
+    for (const b of scene.boxesOf(d)) restyle(ea, ltx, b.id, { ...elementData(b.customData)!, external });
+  }
 }
 
 /** Changes a relationship's data and label, and with `reverse` turns it the other way round. */
@@ -518,10 +554,22 @@ export function zoomIn(view: ExcalidrawView): boolean {
     const scene = ltx.scene();
     const scope = scene.modelId(item.el)!;
     if (!ltx.hasLayer(scope)) createLayer(ea, ltx, scene, item.el, { ...item.data, id: scope }, kind);
-    else fitBoundary(ltx, scope);
+    else {
+      dropUnrelated(ltx, scope);
+      fitBoundary(ltx, scope);
+    }
     carryDown(ea, ltx, scope);
     return { layer: scope };
   });
+}
+
+/**
+ * Takes the boxes around a layer's boundary that no relationship ties to its scope any more out of the layer: the view
+ * of the levels above shows them again, dimmed. Done when the layer comes on the canvas, which starts the undo history
+ * over, so nothing undone brings back a relationship to a box that is gone.
+ */
+function dropUnrelated(ltx: LayerTx, layer: DiagramId) {
+  for (const b of unrelated(ltx.scene(), layer)) removeBox(ltx, b.id);
 }
 
 /** Puts the layer one level up on the canvas, with the scope of the current layer selected. */
@@ -531,6 +579,8 @@ export function zoomOut(view: ExcalidrawView): boolean {
     const v = scene.view(ltx.current);
     if (!v) return;
     const up = scene.parentLayer(v.scope);
+    dropUnrelated(ltx, up);
+    fitBoundary(ltx, up);
     const box = scene.boxIn(v.scope, up);
     return { layer: up, select: box ? [box.id] : [] };
   });
@@ -540,7 +590,9 @@ export function zoomOut(view: ExcalidrawView): boolean {
  * Creates the layer of a system or container where its box is: the scope's boundary around the elements already known
  * to be in it, and around the boundary the elements with relationships to it, where they are in the current layer.
  */
-function createLayer(ea: ExcalidrawAutomate, ltx: LayerTx, scene: Scene, scopeBox: El, scopeData: C4Element & { id: string }, kind: ViewKind) {
+function createLayer(
+  ea: ExcalidrawAutomate, ltx: LayerTx, scene: Scene, scopeBox: El, scopeData: C4Element & { id: string }, kind: ViewKind, from: DiagramId = ltx.current,
+) {
   const scope = scopeData.id;
   if (!elementData(scopeBox.customData)?.id) ltx.patch(scopeBox.id, { customData: { ...(scopeBox.customData ?? {}), [KEY]: scopeData } });
   ltx.addLayer(scope, kind);
@@ -570,7 +622,7 @@ function createLayer(ea: ExcalidrawAutomate, ltx: LayerTx, scene: Scene, scopeBo
   const place = (id: string, p: Vec) => taken.push(addBox(ea, ltx, { ...scene.element(id)!, id }, p, scope));
   const unplaced: { id: string; incoming: boolean }[] = [];
   for (const n of neighbours) {
-    const here = scene.boxIn(n.id, ltx.current);
+    const here = scene.boxIn(n.id, from);
     if (here) {
       const d = way.move(here);
       place(n.id, free({ ...here, x: here.x + d.x, y: here.y + d.y }));
@@ -606,9 +658,10 @@ function freeSpot(b: Box, taken: Box[]): Vec {
 }
 
 /**
- * Brings the relationships of the scope one level up down into its layer, each once: as arrows between the element
- * at the other end and the scope's boundary, to be moved onto the element inside that they are about. One already
- * shown in the layer, from or to anything inside the scope, is not repeated.
+ * Brings the relationships of the scope one level up down into its layer, on every zoom into it: as arrows between the
+ * element at the other end and the scope's boundary, to be moved onto the element inside that they are about. One
+ * the layer shows already, from or to anything inside the scope or its boundary, is not repeated; one missing, as
+ * deleted by mistake, comes back.
  */
 function carryDown(ea: ExcalidrawAutomate, ltx: LayerTx, scope: string) {
   const start = ltx.scene();
@@ -620,16 +673,14 @@ function carryDown(ea: ExcalidrawAutomate, ltx: LayerTx, scope: string) {
     const from = start.modelId(r.from)!;
     const to = start.modelId(r.to)!;
     if ((from !== scope && to !== scope) || from === to) continue;
-    const carried = r.data.carried ?? [];
-    if (carried.includes(scope)) continue;
-    ltx.patch(r.arrow.id, { customData: { ...(r.arrow.customData ?? {}), [KEY]: { ...r.data, carried: [...carried, scope] } } });
     const outgoing = from === scope;
     const other = outgoing ? to : from;
     const scene = ltx.scene();
-    const shown = scene.relationships(scope).some((x) => {
-      const f = scene.modelId(x.from)!;
-      const t = scene.modelId(x.to)!;
-      return outgoing ? scene.within(f, scope) && t === other : f === other && scene.within(t, scope);
+    const shown = scene.elementsIn(scope).some((x) => {
+      const ends = !x.containerId && relationshipData(x.customData) ? endsOf(scene, x) : null;
+      if (!ends) return false;
+      const [f, t] = ends;
+      return outgoing ? scene.within(f, scope) && scene.within(t, other) : scene.within(f, other) && scene.within(t, scope);
     });
     if (shown) continue;
     let otherBox = scene.representative(other, scope);
@@ -672,4 +723,163 @@ function addBoundary(ea: ExcalidrawAutomate, ltx: LayerTx, b: Box, scope: C4Elem
   const textId = ea.addText(b.x + BOUNDARY_PAD / 2, b.y + b.height - m.height - BOUNDARY_PAD / 4, label, { textAlign: "left" });
   const tag = { [KEY]: { boundary: scope.id } };
   for (const id of [rectId, textId]) ltx.add({ ...ea.getElement(id), customData: tag }, layer);
+}
+
+/**
+ * Moves the containers and components dropped onto another system or container, or into the boundary of one, into it:
+ * from then on they belong there. The boundary of the layer is fitted again around the ones dropped in it, as one
+ * dragged out and back. Takes the boxes that were dragged; returns what was moved, to tell the user.
+ */
+export function dropBoxes(view: ExcalidrawView, boxIds: string[]): string[] {
+  const els = view.excalidrawAPI!.getSceneElements();
+  const { scene, current } = readScene(els);
+  const ghosts = els.filter((e) => isGhost(e.customData) && !e.containerId && e.type !== "text" && e.type !== "arrow");
+  const moves: { id: string; parent: string }[] = [];
+  const back: string[] = []; // dropped in the boundary they belong in
+  for (const boxId of boxIds) {
+    const box = scene.byId.get(boxId);
+    const id = box && scene.modelId(box);
+    if (!box || !id || moves.some((m) => m.id === id) || !ofLevel(scene, current, id)) continue;
+    const parent = dropTarget(scene, current, ghosts, box, id);
+    if (parent && parent !== scene.parent(id)) moves.push({ id, parent });
+    else if (parent && parent === scene.view(current)?.scope) back.push(boxId);
+  }
+  if (!moves.length && !back.length) return [];
+  const name = (id: string) => scene.element(id)?.name.trim() || "Unnamed";
+  const done = withLayers(view, (ea, ltx) => {
+    if (back.length) fitBoundary(ltx, current, back);
+    for (const m of moves) reparent(ea, ltx, m.id, m.parent);
+  });
+  return done ? moves.map((m) => `Moved ${name(m.id)} into ${name(m.parent)}.`) : [];
+}
+
+/**
+ * The element a dragged container or component is dropped into, by the center of its box: the topmost internal system
+ * or container of the right kind under it, drawn in the layer or a ghost of a level above, else the scope of the layer
+ * when it is inside the boundary.
+ */
+function dropTarget(scene: Scene, layer: DiagramId, ghosts: El[], box: El, id: string): string | undefined {
+  const kind = parentKind(scene.element(id)!.kind);
+  if (!kind) return undefined;
+  const c = center(box);
+  const fits = (p: string | null | undefined): p is string => {
+    const d = p ? scene.element(p) : undefined;
+    return !!d && d.kind === kind && !d.external && !scene.within(p!, id);
+  };
+  for (const b of scene.boxes(layer).reverse()) {
+    const p = scene.modelId(b);
+    if (b.id !== box.id && fits(p) && contains(b, c)) return p;
+  }
+  for (const g of [...ghosts].reverse()) {
+    const source = ghostSource(g.id);
+    const original = source ? scene.byId.get(source) : undefined;
+    const p = original ? scene.modelId(original) : null;
+    if (fits(p) && contains(g, c)) return p;
+  }
+  const v = scene.view(layer);
+  const rect = scene.boundary(layer).rect;
+  return v && rect && fits(v.scope) && contains(rect, center(box)) ? v.scope : undefined;
+}
+
+/**
+ * Makes an element part of another parent, in every layer: it goes into the parent's layer, which is created first if
+ * there is none, and leaves the other layers, where the parent stands for it. Its relationships stay, between the
+ * elements at their ends as each layer shows them.
+ */
+function reparent(ea: ExcalidrawAutomate, ltx: LayerTx, id: string, parent: string) {
+  const before = ltx.scene();
+  const data = before.element(id);
+  if (!data) return;
+  const oldHome = data.parent ? before.diagramFor(data.parent) : undefined;
+  const external = before.inheritedExternal(parent);
+  const moved: C4Element = { ...data, id, parent, external };
+  for (const b of before.boxesOf(id)) restyle(ea, ltx, b.id, moved);
+  passExternal(ea, ltx, before, id, external);
+
+  let scene = ltx.scene();
+  let home = scene.diagramFor(parent);
+  if (home === undefined) {
+    // The parent has no layer yet: made as zooming into it would, with the element in it.
+    const parentBox = scene.boxIn(parent, ltx.current) ?? scene.boxesOf(parent)[0];
+    const kind = zoomView(scene.element(parent)!);
+    if (!parentBox || !kind) return;
+    createLayer(ea, ltx, scene, parentBox, { ...scene.element(parent)!, id: parent }, kind, scene.diagramOf(parentBox));
+    home = parent;
+    scene = ltx.scene();
+  }
+  const placed: string[] = [];
+  if (!scene.boxIn(id, home)) {
+    placed.push(addBox(ea, ltx, moved, slotIn(scene, home, moved), home).id);
+    scene = ltx.scene();
+  }
+
+  // Out of every other layer, keeping its relationships there.
+  const leaving = scene.boxesOf(id).filter((b) => scene.diagramOf(b) !== home);
+  const layers = new Set([home, ltx.current, ...leaving.map((b) => scene.diagramOf(b)), ...(oldHome !== undefined ? [oldHome] : [])]);
+  const kept = scene.relationships()
+    .filter((r) => leaving.includes(r.from) || leaving.includes(r.to))
+    .map((r) => ({
+      from: scene.modelId(r.from)!,
+      to: scene.modelId(r.to)!,
+      data: { relationship: true as const, description: r.data.description, technology: r.data.technology },
+    }));
+  const neighbours = scene.neighbours(parent);
+  for (const b of leaving) removeBox(ltx, b.id);
+  for (const k of kept) {
+    let s = ltx.scene();
+    // The element at the other end, as the parent's layer shows it, around the boundary.
+    const other = k.from === id ? k.to : k.from;
+    const n = neighbours.find((x) => s.within(other, x.id));
+    if (n && !s.representative(n.id, home)) {
+      const d = { ...s.element(n.id)!, id: n.id };
+      addBox(ea, ltx, d, slotIn(s, home, d), home);
+      s = ltx.scene();
+    }
+    const a = s.representative(k.from, home);
+    const b = s.representative(k.to, home);
+    if (a && b && a.id !== b.id && !s.hasRelationship(home, s.modelId(a)!, s.modelId(b)!)) addArrow(ea, ltx, a, b, k.data, home);
+    s = ltx.scene();
+    for (const t of s.liftTargets(k.from, k.to, home)) addArrow(ea, ltx, t.from, t.to, k.data, t.diagram);
+  }
+  for (const l of layers) fitBoundary(ltx, l, l === home ? placed : []);
+}
+
+/** Takes a box out of its layer, with its text and its relationships. */
+function removeBox(ltx: LayerTx, boxId: string) {
+  const box = ltx.get(boxId);
+  if (!box) return;
+  for (const ref of box.boundElements ?? []) {
+    if (ref.type === "arrow") removeArrow(ltx, ref.id);
+    else ltx.remove(ref.id);
+  }
+  ltx.remove(boxId);
+}
+
+/** Takes a relationship out of its layer, with its label, and unglues it from its ends. */
+function removeArrow(ltx: LayerTx, arrowId: string) {
+  const arrow = ltx.get(arrowId);
+  if (!arrow) return;
+  const text = boundText(ltx, arrow);
+  if (text) ltx.remove(text.id);
+  ltx.remove(arrow.id);
+  for (const end of [arrow.startBinding?.elementId, arrow.endBinding?.elementId]) {
+    const other = end ? ltx.get(end) : undefined;
+    if (other) ltx.patch(other.id, { boundElements: (other.boundElements ?? []).filter((b) => b.id !== arrow.id) });
+  }
+}
+
+/**
+ * Deletes, in the other layers, the relationships that relationships deleted from the layer on the canvas stood for:
+ * between the same two elements, or anything inside them. Not while the layer still has another relationship between
+ * the two the same way. One undo step, after the delete itself. False when there was nothing to delete.
+ */
+export function deleteBelow(view: ExcalidrawView, gone: [string, string][]): boolean {
+  const { scene, current } = readScene(view.excalidrawAPI!.getSceneElements());
+  const arrows = gone
+    .filter(([from, to]) => !scene.hasRelationship(current, from, to))
+    .flatMap(([from, to]) => relationshipsWithin(scene, from, to, current));
+  if (!arrows.length) return false;
+  return withLayers(view, (_ea, ltx) => {
+    for (const a of arrows) removeArrow(ltx, a.id);
+  });
 }

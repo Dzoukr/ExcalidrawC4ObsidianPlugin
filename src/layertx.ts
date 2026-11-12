@@ -1,7 +1,7 @@
 import { El, ExcalidrawAutomate, ExcalidrawView, SceneTx } from "./excalidraw";
 import { ghostsFor } from "./ghosts";
-import { DiagramId, Scene } from "./layers";
-import { C4Store, CONTEXT, KEY, ViewKind, bounds, isGhost, storeData } from "./model";
+import { DiagramId, Scene, endsOf, guarded, markPatches } from "./layers";
+import { C4Store, CONTEXT, KEY, ViewKind, bounds, elementData, isGhost, relationshipData, storeData } from "./model";
 
 const randomNonce = () => Math.floor(Math.random() * 2 ** 31);
 
@@ -43,6 +43,124 @@ export function protectStore(view: ExcalidrawView) {
   const back = { ...last.carrier, isDeleted: false, locked: true, version: (last.carrier.version ?? 0) + 1, versionNonce: randomNonce() };
   const others = api.getSceneElementsIncludingDeleted().filter((e) => e.id !== back.id);
   api.updateScene({ elements: [...others, back], captureUpdate: "NEVER" });
+}
+
+/** Elements the plugin took off the canvas, which the guard of the levels above lets go. */
+const removedByPlugin = new Set<string>();
+
+/**
+ * The elements of the levels above on the canvas as they were last seen, to put back when they are deleted, and the
+ * relationships glued to them, to glue back.
+ */
+export interface Guard {
+  file: string | undefined; // the drawing and layer they were seen on: on another, nothing is put back
+  layer: DiagramId;
+  keep: Map<string, El>;
+  glued: Map<string, El>;
+  relationships: Map<string, [string, string]>; // between two elements, by arrow: the elements they go between
+}
+
+/**
+ * Puts back the elements of the levels above that were deleted from the layer on the canvas since the last look:
+ * they are there for context and are deleted on their own level. With them the relationships glued to them, as they
+ * were. Returns the guard for the next look and the names of the elements put back.
+ */
+export function guardLevels(view: ExcalidrawView, last: Guard | undefined): { guard: Guard; restored: string[]; deleted: [string, string][] } {
+  const api = view.excalidrawAPI!;
+  const all = api.getSceneElementsIncludingDeleted();
+  const byId = new Map(all.map((e) => [e.id, e]));
+  const tx = new SceneTx(view);
+  const restored: string[] = [];
+  const back = new Set<string>();
+  const same = last && last.file === view.file?.path && last.layer === readStore(all.filter((e) => !e.isDeleted)).current;
+  for (const [id, was] of same ? last.keep : []) {
+    const now = byId.get(id);
+    // Gone from the canvas altogether is another layer put on it, not a delete.
+    if (!now?.isDeleted) continue;
+    if (removedByPlugin.delete(id)) continue;
+    tx.patch(id, { ...was, isDeleted: false, version: now.version }); // newer than the delete
+    back.add(id);
+    if (was.containerId) continue;
+    const d = elementData(was.customData);
+    restored.push(d ? d.name.trim() || "Unnamed" : relationshipData(was.customData) ? "A relationship" : was.type === "text" ? "" : "The boundary");
+  }
+  // The relationships glued to what came back, and what they are glued to, as they were.
+  for (const id of back) {
+    const snapshot = (x: string) => last!.keep.get(x) ?? last!.glued.get(x);
+    for (const ref of snapshot(id)!.boundElements ?? []) {
+      const was = snapshot(ref.id);
+      const now = tx.get(ref.id);
+      if (ref.type !== "arrow" || !was || !now) continue;
+      if (now.isDeleted || now.startBinding?.elementId !== was.startBinding?.elementId || now.endBinding?.elementId !== was.endBinding?.elementId) {
+        tx.patch(ref.id, { ...was, isDeleted: false, version: now.version });
+      }
+    }
+    const was = snapshot(id)!;
+    for (const end of [was.startBinding?.elementId, was.endBinding?.elementId]) {
+      const box = end ? tx.get(end) : undefined;
+      if (box && !box.boundElements?.some((b) => b.id === id)) tx.patch(box.id, { boundElements: [...(box.boundElements ?? []), { type: "arrow", id }] });
+    }
+  }
+  tx.commit("NEVER");
+  // The relationships between two elements the user deleted, and did not get back.
+  const deleted: [string, string][] = [];
+  for (const [id, ends] of same ? last.relationships : []) {
+    // The ones guarded here are put back, or were taken out by the plugin.
+    if (back.has(id) || last!.keep.has(id) || !byId.get(id)?.isDeleted) continue;
+    if (!removedByPlugin.delete(id)) deleted.push(ends);
+  }
+  // What to guard from now on: the elements of the levels above, and the relationships glued to them.
+  const { scene, current } = readScene(api.getSceneElements());
+  const guard: Guard = { file: view.file?.path, layer: current, keep: new Map(), glued: new Map(), relationships: new Map() };
+  for (const r of scene.relationships(current)) {
+    const ends = endsOf(scene, r.arrow);
+    if (ends) guard.relationships.set(r.arrow.id, ends);
+  }
+  for (const id of guarded(scene, current)) {
+    const e = scene.byId.get(id);
+    if (!e) continue;
+    guard.keep.set(id, e);
+    for (const ref of e.boundElements ?? []) {
+      const a = ref.type === "arrow" ? scene.byId.get(ref.id) : undefined;
+      if (a) guard.glued.set(a.id, a);
+    }
+  }
+  return { guard, restored: restored.filter(Boolean), deleted };
+}
+
+/**
+ * Brings what the canvas shows about its elements up to date after they changed, as after a drag: the marks of the
+ * boxes that are where they do not belong, and the ghosts of the levels above, whose boundaries fit around what is
+ * drawn. Left out of the undo history: undo takes the elements back, and this follows them again.
+ */
+export function refreshCanvas(view: ExcalidrawView) {
+  const api = view.excalidrawAPI;
+  if (!api) return;
+  const { scene, current } = readScene(api.getSceneElements());
+  const tx = new SceneTx(view);
+  for (const [id, p] of markPatches(scene, current)) tx.patch(id, p);
+  syncGhosts(tx, scene, current);
+  tx.commit("NEVER");
+}
+
+/** Brings the ghosts of the levels above the layer on the canvas up to date, behind everything else. */
+function syncGhosts(tx: SceneTx, scene: Scene, current: DiagramId) {
+  const fresh = ghostsFor(scene, current);
+  const old = tx.live().filter((e) => isGhost(e.customData));
+  if (!fresh.length && !old.length) return;
+  const keep = new Set(fresh.map((g) => g.id));
+  for (const o of old) if (!keep.has(o.id)) tx.delete(o.id);
+  // With the links between a box and its text, which a ghost saved by the Obsidian plugin may have lost.
+  const shape = (e: El) => JSON.stringify([
+    e.x, e.y, e.width, e.height, e.points, e.text, e.opacity, e.strokeColor, e.backgroundColor, e.containerId ?? null, e.boundElements?.map((b) => b.id) ?? null,
+  ]);
+  const added: El[] = [];
+  for (const g of fresh) {
+    const o = tx.get(g.id);
+    if (!o) added.push(g);
+    else if (o.isDeleted || shape(o) !== shape(g)) tx.patch(g.id, { ...g, isDeleted: false });
+  }
+  if (added.length) tx.insert(added, 0);
 }
 
 /**
@@ -104,6 +222,17 @@ export class LayerTx {
     }
   }
 
+  /** Takes an element out of its layer. */
+  remove(id: string) {
+    if (this.tx.get(id)) {
+      removedByPlugin.add(id);
+      return this.tx.delete(id);
+    }
+    for (const m of this.hidden.values()) {
+      if (m.delete(id)) this.dirty = true;
+    }
+  }
+
   add(el: El, layer: DiagramId = this.current) {
     if (layer === this.current) return this.tx.add(el);
     const m = this.hidden.get(layer) ?? new Map<string, El>();
@@ -143,26 +272,16 @@ export class LayerTx {
     return el;
   }
 
-  /** Brings the ghosts of the levels above up to date with the change, behind everything else. */
-  private syncGhosts() {
-    const fresh = ghostsFor(this.scene(), this.current);
-    const old = this.tx.live().filter((e) => isGhost(e.customData));
-    if (!fresh.length && !old.length) return;
-    const keep = new Set(fresh.map((g) => g.id));
-    for (const o of old) if (!keep.has(o.id)) this.tx.delete(o.id);
-    const shape = (e: El) => JSON.stringify([e.x, e.y, e.width, e.height, e.points, e.text, e.opacity, e.strokeColor, e.backgroundColor]);
-    const added: El[] = [];
-    for (const g of fresh) {
-      const o = this.tx.get(g.id);
-      if (!o) added.push(g);
-      else if (o.isDeleted || shape(o) !== shape(g)) this.tx.patch(g.id, { ...g, isDeleted: false });
-    }
-    if (added.length) this.tx.insert(added, 0);
+  /** Marks the boxes of every layer that are where they do not belong, and unmarks the others. */
+  private mark() {
+    const scene = this.scene();
+    for (const layer of Object.keys(this.store.views)) for (const [id, p] of markPatches(scene, layer)) this.patch(id, p);
   }
 
   /** Applies the change to the canvas and the store. */
   commit(ea: ExcalidrawAutomate) {
-    this.syncGhosts();
+    this.mark();
+    syncGhosts(this.tx, this.scene(), this.current);
     if (this.dirty) {
       const carrier = this.carrierFor(ea, this.elements(this.current));
       if (this.carrier) this.tx.patch(carrier.id, { x: carrier.x, y: carrier.y, customData: carrier.customData });
@@ -176,6 +295,7 @@ export class LayerTx {
    * layers, so the undo history starts over.
    */
   switchTo(ea: ExcalidrawAutomate, layer: DiagramId, selected: string[] = []) {
+    this.mark();
     const leaving = this.elements(this.current);
     const arriving = this.elements(layer);
     this.hidden.set(this.current, new Map(leaving.map((e) => [e.id, e])));

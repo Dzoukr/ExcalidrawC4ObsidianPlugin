@@ -2,7 +2,7 @@
 // Pure: works on plain element data, no Obsidian or Excalidraw runtime.
 
 import type { El } from "./excalidraw";
-import { CONTEXT, KEY, boundaryData, center, isGhost, laneLine, laneOffsets, makeWay, normalOf, relationshipData } from "./model.ts";
+import { BOUNDARY_LABEL, BOUNDARY_PAD, CONTEXT, KEY, boundaryData, bounds, center, isGhost, laneLine, laneOffsets, makeWay, normalOf, relationshipData } from "./model.ts";
 import type { Box, Vec } from "./model.ts";
 import type { DiagramId, Scene } from "./layers.ts";
 
@@ -14,11 +14,27 @@ const TEXT_COLOR = "#1e1e1e";
 
 export const ghostId = (id: string) => PREFIX + id;
 
+/**
+ * The id of a ghost's text: 8 characters at most, the same every time. The Obsidian plugin gives a text with a longer id
+ * a new one on saving, which would part it from its box when the ghosts are made again.
+ */
+export function ghostTextId(id: string): string {
+  let h = 0x811c9dc5; // FNV-1a
+  for (const ch of PREFIX + id) h = Math.imul(h ^ ch.charCodeAt(0), 0x01000193);
+  return "g" + (h >>> 0).toString(36).padStart(7, "0");
+}
+
+/** The id of the ghost of an element. */
+const idOf = (e: El) => (e.type === "text" ? ghostTextId(e.id) : ghostId(e.id));
+
+/** The id of the element a ghost is a copy of. */
+export const ghostSource = (id: string): string | null => (id.startsWith(PREFIX) ? id.slice(PREFIX.length) : null);
+
 /** A ghost of an element: the same look, dimmed and locked, unbound, and no C4 element any more. */
 function ghost(e: El, p: Partial<El>): El {
   const g: El & { index?: unknown } = {
     ...e,
-    id: ghostId(e.id),
+    id: idOf(e),
     locked: true,
     opacity: Math.round((e.opacity ?? 100) * (e.type === "text" ? TEXT_OPACITY : OPACITY)),
     ...(e.type === "text" ? { strokeColor: TEXT_COLOR } : {}),
@@ -35,6 +51,16 @@ function ghost(e: El, p: Partial<El>): El {
   return g;
 }
 
+/** A boundary grown to hold a box, with room for its label below it. */
+function grow(b: Box, around: Box | null): Box {
+  if (!around) return b;
+  const x = Math.min(b.x, around.x);
+  const y = Math.min(b.y, around.y);
+  const r = Math.max(b.x + b.width, around.x + around.width);
+  const btm = Math.max(b.y + b.height, around.y + around.height + BOUNDARY_LABEL);
+  return { x, y, width: r - x, height: btm - y };
+}
+
 const textOf = (scene: Scene, e: El): El | undefined => {
   const ref = e.boundElements?.find((b) => b.type === "text");
   return ref ? scene.byId.get(ref.id) : undefined;
@@ -43,7 +69,7 @@ const textOf = (scene: Scene, e: El): El | undefined => {
 /** A ghost of an element moved by an offset, with its text. */
 function moved(scene: Scene, e: El, d: Vec): El[] {
   const text = textOf(scene, e);
-  const g = ghost(e, { x: e.x + d.x, y: e.y + d.y, boundElements: text ? [{ type: "text", id: ghostId(text.id) }] : null });
+  const g = ghost(e, { x: e.x + d.x, y: e.y + d.y, boundElements: text ? [{ type: "text", id: ghostTextId(text.id) }] : null });
   return text ? [g, ghost(text, { x: text.x + d.x, y: text.y + d.y })] : [g];
 }
 
@@ -81,11 +107,13 @@ export function ghostsFor(scene: Scene, current: DiagramId): El[] {
     }
     for (const [id, b] of here) shown.set(id, b);
 
-    // The boundary of this level grows around the level opened in it.
+    // The boundary of this level grows around the level opened in it, and further around its elements shown below,
+    // as a boundary fits the elements in it.
     const { rect, label } = scene.boundary(up);
     let next: Box | undefined;
     if (rect) {
-      next = way.stretch(rect);
+      const inner = [...shown].filter(([id]) => id !== up && scene.within(id, up)).map(([, b]) => b);
+      next = grow(way.stretch(rect), bounds([opened, ...inner], BOUNDARY_PAD));
       out.push(ghost(rect, next));
       handled.add(rect.id);
       if (label) {
@@ -129,7 +157,7 @@ export function ghostsFor(scene: Scene, current: DiagramId): El[] {
         const text = textOf(scene, arrow);
         out.push(ghost(arrow, {
           x: start.x, y: start.y, points: [[0, 0], [dx, dy]], width: Math.abs(dx), height: Math.abs(dy),
-          boundElements: text ? [{ type: "text", id: ghostId(text.id) }] : null,
+          boundElements: text ? [{ type: "text", id: ghostTextId(text.id) }] : null,
         }));
         if (text) out.push(ghost(text, { x: start.x + dx / 2 - text.width / 2, y: start.y + dy / 2 - text.height / 2 }));
       });

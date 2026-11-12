@@ -15,6 +15,7 @@ export interface C4Element {
   external?: boolean; // outside the system being described
   id?: string; // the same element in every diagram; the box's own id for elements drawn before ids
   parent?: string; // the system of a container, the container of a component
+  metadata?: Record<string, string>; // key: value pairs, not drawn
 }
 
 /** The data of a relationship arrow. */
@@ -22,7 +23,6 @@ export interface C4Relationship {
   relationship: true;
   description: string;
   technology?: string;
-  carried?: string[]; // the layers it has been carried down into, once each
 }
 
 /** What a layer below the system context shows: the containers of a system or the components of a container. */
@@ -51,6 +51,13 @@ export interface C4Boundary {
   boundary: string; // id of the system or container
 }
 
+/** Metadata from the rows of a form: keys trimmed, rows without a key left out, the last of the same key kept. */
+export function cleanMetadata(rows: readonly (readonly [string, string])[]): Record<string, string> | undefined {
+  const out: Record<string, string> = {};
+  for (const [key, value] of rows) if (key.trim()) out[key.trim()] = value.trim();
+  return Object.keys(out).length ? out : undefined;
+}
+
 export const isKind = (k: unknown): k is C4Kind => KINDS.includes(k as C4Kind);
 
 const KIND_TITLES: Record<C4Kind, string> = {
@@ -61,6 +68,12 @@ const KIND_TITLES: Record<C4Kind, string> = {
 };
 
 export const hasTechnology = (kind: C4Kind) => kind === "container" || kind === "component";
+
+/** Only the elements of the system context can be external; containers and components take it from their system. */
+export const canBeExternal = (kind: C4Kind) => kind === "person" || kind === "system";
+
+/** The kind of element a container or component belongs in; null for the others, which belong in no element. */
+export const parentKind = (kind: C4Kind): C4Kind | null => (kind === "container" ? "system" : kind === "component" ? "container" : null);
 
 export const kindTitle = (kind: C4Kind, external = false) => (external ? "External " : "") + KIND_TITLES[kind];
 
@@ -93,11 +106,17 @@ export function boundaryData(customData: Record<string, unknown> | undefined): C
 export const zoomView = (e: Pick<C4Element, "kind" | "external">): ViewKind | null =>
   e.external ? null : e.kind === "system" ? "container" : e.kind === "container" ? "component" : null;
 
-/** The kinds a diagram takes: null is the system context. */
+/**
+ * The kinds a diagram takes, those of its own level: null is the system context. The elements around a boundary come
+ * from the levels above and are added there.
+ */
 export function allowedKinds(view: ViewKind | null): C4Kind[] {
   if (!view) return ["person", "system"];
-  return view === "container" ? ["person", "system", "container"] : ["person", "system", "container", "component"];
+  return view === "container" ? ["container"] : ["component"];
 }
+
+/** The level that takes elements of a kind, as the user knows it. */
+export const levelOf = (kind: C4Kind): string => (kind === "container" ? "Container" : kind === "component" ? "Component" : "System");
 
 /** Parent of an element added to a diagram: the scope for its children, the scope's parent for a sibling container. */
 export function parentFor(kind: C4Kind, view: C4View | null, scopeParent: string | undefined): string | undefined {
@@ -177,6 +196,9 @@ const LOOKS: Record<C4Kind, { internal: Look; external: Look }> = {
 export const lookOf = (e: Pick<C4Element, "kind" | "external">): Look => LOOKS[e.kind][e.external ? "external" : "internal"];
 
 export const RELATIONSHIP_COLOR = "#707070";
+
+/** The outline of a box drawn where it does not belong, as an error: red, thick and dashed. */
+export const MISPLACED_LOOK = { strokeColor: "#e03131", strokeWidth: 4, strokeStyle: "dashed" } as const;
 
 export interface Vec {
   x: number;

@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Scene, grid, levelsUpTo, nextSlot, row } from "../src/layers.ts";
-import { BOUNDARY_LABEL, BOUNDARY_PAD, CONTEXT, ELEMENT_WIDTH, KEY, MIN_HEIGHT, allowedKinds, fittedBoundary, isGhost, makeWay, overlaps, parentFor, pushOut, storeData, wayBack, zoomView } from "../src/model.ts";
-import { ghostId, ghostsFor } from "../src/ghosts.ts";
+import { Scene, endsOf, grid, guarded, levelsUpTo, relationshipsWithin, markPatches, misplaced, nextSlot, row, unrelated } from "../src/layers.ts";
+import { BOUNDARY_LABEL, BOUNDARY_PAD, CONTEXT, ELEMENT_WIDTH, KEY, MIN_HEIGHT, MISPLACED_LOOK, allowedKinds, canBeExternal, lookOf, parentKind, fittedBoundary, isGhost, makeWay, overlaps, parentFor, pushOut, storeData, wayBack, zoomView } from "../src/model.ts";
+import { ghostId, ghostTextId, ghostsFor } from "../src/ghosts.ts";
 import type { C4Element, ViewKind } from "../src/model.ts";
 import type { El } from "../src/excalidraw.ts";
 
@@ -106,8 +106,8 @@ test("neighbours are what has relationships with the scope or anything in it, at
 
 test("each layer takes its own kinds, and new elements get the scope as parent", () => {
   assert.deepEqual(allowedKinds(null), ["person", "system"]);
-  assert.ok(allowedKinds("container").includes("container"));
-  assert.ok(!allowedKinds("container").includes("component"));
+  assert.deepEqual(allowedKinds("container"), ["container"]); // only the level's own kind
+  assert.deepEqual(allowedKinds("component"), ["component"]);
   assert.equal(parentFor("container", { view: "container", scope: "s" }, undefined), "s");
   assert.equal(parentFor("person", { view: "container", scope: "s" }, undefined), undefined);
   assert.equal(parentFor("component", { view: "component", scope: "p" }, "s"), "p");
@@ -251,4 +251,138 @@ test("a boundary fits the elements in it, but is never smaller than one element"
   assert.equal(empty.width, ELEMENT_WIDTH + 2 * BOUNDARY_PAD);
   // A long label keeps it wide enough.
   assert.equal(fittedBoundary(big, [one], { width: 500 }).width, 500 + 2 * BOUNDARY_PAD);
+});
+
+test("containers and components are external as their system is", () => {
+  const scene = sceneOf({
+    [CONTEXT]: context,
+    s: shop,
+    m: [box("queue", { kind: "container", id: "q", parent: "m" }), box("worker", { kind: "component", id: "k", parent: "q" })],
+  });
+  assert.equal(scene.inheritedExternal("s"), false);
+  assert.equal(scene.inheritedExternal("m"), true);
+  assert.equal(scene.inheritedExternal("q"), true);
+  assert.equal(scene.inheritedExternal(undefined), false);
+  assert.deepEqual(scene.descendants("m").sort(), ["k", "q"]);
+  assert.deepEqual([canBeExternal("person"), canBeExternal("system"), canBeExternal("container"), canBeExternal("component")], [true, true, false, false]);
+  assert.deepEqual([parentKind("container"), parentKind("component"), parentKind("system")], ["system", "container", null]);
+});
+
+test("a box is misplaced outside the boundary of its scope, or inside one it does not belong in", () => {
+  const tag = { [KEY]: { boundary: "s" } };
+  const rect: El = { ...base, id: "b", type: "rectangle", x: 0, y: 0, width: 500, height: 500, customData: tag };
+  const at = (e: El, x: number, y: number): El => ({ ...e, x, y });
+  const layer = [
+    rect,
+    at(shop[0], 50, 50), // web, inside: fine
+    at(shop[1], 700, 50), // api, dragged out
+    at(shop[2], 200, 200), // user, dragged in
+  ];
+  const scene = sceneOf({ [CONTEXT]: context, s: layer });
+  assert.deepEqual(misplaced(scene, "s").map((b) => b.id).sort(), ["api", "user2"]);
+  assert.deepEqual(misplaced(scene, CONTEXT), []);
+
+  // Marked red, and back to their own outline once in place again.
+  const patches = new Map(markPatches(scene, "s"));
+  assert.deepEqual([...patches.keys()].sort(), ["api", "user2"]);
+  assert.equal(patches.get("api")!.strokeColor, MISPLACED_LOOK.strokeColor);
+  const fixed = sceneOf({ [CONTEXT]: context, s: [rect, at(shop[0], 50, 50), { ...at(shop[1], 200, 50), ...MISPLACED_LOOK }] });
+  assert.deepEqual(markPatches(fixed, "s"), [["api", { strokeColor: lookOf({ kind: "container" }).stroke, strokeWidth: 1, strokeStyle: "solid" }]]);
+});
+
+test("a boundary of a level above grows around its elements drawn in the layer", () => {
+  const at = (e: El, x: number, y: number) => ({ ...e, x, y });
+  const shopTag = { [KEY]: { boundary: "s" } };
+  const apiTag = { [KEY]: { boundary: "p" } };
+  const scene = sceneOf({
+    [CONTEXT]: [at(box("shop", { kind: "system", id: "s" }), 0, 0)],
+    s: [
+      { ...base, id: "sb", type: "rectangle", x: -50, y: -50, width: 400, height: 250, customData: shopTag },
+      at(box("api", { kind: "container", id: "p", parent: "s" }), 0, 0),
+      at(box("web", { kind: "container", id: "w", parent: "s" }), 200, 0),
+    ],
+    p: [
+      { ...base, id: "pb", type: "rectangle", x: -100, y: -100, width: 300, height: 300, customData: apiTag },
+      at(box("web2", { kind: "container", id: "w", parent: "s" }), 500, 400), // the sibling, beyond where the boundary reaches
+      at(box("user", { kind: "person", id: "u" }), -900, -900), // not in the shop: left out
+    ],
+  });
+  const sb = ghostsFor(scene, "p").find((e) => e.id === ghostId("sb"))!;
+  assert.ok(sb.x + sb.width >= 600 + BOUNDARY_PAD && sb.y + sb.height >= 500 + BOUNDARY_PAD + BOUNDARY_LABEL, "around the sibling");
+  assert.ok(sb.x <= -100 - BOUNDARY_PAD && sb.y <= -100 - BOUNDARY_PAD, "and the layer opened in it");
+  assert.ok(sb.x > -900, "but not the person");
+});
+
+test("a ghost's text keeps a short id of its own, bound to the ghost of its box", () => {
+  const text: El = { ...base, id: "t1", type: "text", text: "Mail", containerId: "mail" };
+  const mail: El = { ...box("mail", { kind: "system", id: "m", external: true }), x: 400, boundElements: [{ type: "text", id: "t1" }] };
+  const scene = sceneOf({
+    [CONTEXT]: [box("shop", { kind: "system", id: "s" }), mail, text],
+    s: [{ ...base, id: "sb", type: "rectangle", x: -50, y: -50, width: 200, height: 200, customData: { [KEY]: { boundary: "s" } } }],
+  });
+  const ghosts = ghostsFor(scene, "s");
+  const g = ghosts.find((e) => e.id === ghostId("mail"))!;
+  const t = ghosts.find((e) => e.type === "text")!;
+  assert.equal(t.id, ghostTextId("t1"));
+  assert.ok(t.id.length <= 8);
+  assert.equal(ghostTextId("t1"), ghostTextId("t1"));
+  assert.notEqual(ghostTextId("t1"), ghostTextId("t2"));
+  assert.equal(t.containerId, g.id);
+  assert.deepEqual(g.boundElements, [{ type: "text", id: t.id }]);
+});
+
+test("a layer guards what comes from the levels above against deleting, not its own elements", () => {
+  const tag = { [KEY]: { boundary: "p" } };
+  const text: El = { ...base, id: "wt", type: "text", containerId: "web" };
+  const layer = [
+    { ...base, id: "pb", type: "rectangle", customData: tag }, // the boundary
+    box("ctl", { kind: "component", id: "c", parent: "p" }), // of the level
+    { ...box("web", { kind: "container", id: "w", parent: "s" }), boundElements: [{ type: "text", id: "wt" }] }, // a sibling container
+    text,
+    box("user", { kind: "person", id: "u" }),
+    arrow("up", "user", "web"), // between two of the levels above
+    arrow("own", "user", "ctl"), // with an end on the level
+    arrow("uses", "ctl", "web"), // which ties the sibling container to the layer
+    arrow("carried", "user", "pb"), // to the boundary
+  ];
+  const scene = sceneOf({ [CONTEXT]: context, s: shop, p: layer });
+  assert.deepEqual([...guarded(scene, "p")].sort(), ["pb", "up", "user", "web", "wt"]);
+  assert.deepEqual([...guarded(scene, CONTEXT)], []); // the system context is all one level
+});
+
+test("a box around a boundary with no relationship to its scope any more is out of the layer", () => {
+  const tag = { [KEY]: { boundary: "s" } };
+  const layer = [
+    { ...base, id: "sb", type: "rectangle", customData: tag, boundElements: [{ type: "arrow", id: "carried" }] },
+    box("web", { kind: "container", id: "w", parent: "s" }),
+    box("user2", { kind: "person", id: "u" }), // uses the shop, one level up
+    box("mail2", { kind: "system", id: "m", external: true }), // used by the shop, one level up
+    box("bank", { kind: "system", id: "b" }), // its relationship is gone
+    box("admin", { kind: "person", id: "a" }), // only carried down to the boundary
+    arrow("carried", "admin", "sb"),
+  ];
+  const scene = sceneOf({ [CONTEXT]: [...context, box("bank0", { kind: "system", id: "b" }), box("admin0", { kind: "person", id: "a" })], s: layer });
+  assert.deepEqual(unrelated(scene, "s").map((b) => b.id), ["bank"]);
+  assert.ok(!guarded(scene, "s").has("bank"), "and it can be deleted");
+  assert.ok(guarded(scene, "s").has("user2"));
+  assert.deepEqual(unrelated(scene, CONTEXT), []);
+});
+
+test("a relationship stands for the ones below between the same elements or anything inside them", () => {
+  const tag = { [KEY]: { boundary: "s" } };
+  const scene = sceneOf({
+    [CONTEXT]: context, // user → shop, shop → mail
+    s: [
+      { ...base, id: "sb", type: "rectangle", customData: tag },
+      ...shop, // user → web
+      box("mail2", { kind: "system", id: "m", external: true }),
+      arrow("carried", "user2", "sb"), // user → the shop's boundary
+      arrow("out", "api", "mail2"), // api → mail
+    ],
+  });
+  assert.deepEqual(endsOf(scene, scene.byId.get("carried")!), ["u", "s"]);
+  assert.deepEqual(relationshipsWithin(scene, "u", "s", CONTEXT).map((a) => a.id).sort(), ["a3", "carried"]);
+  assert.deepEqual(relationshipsWithin(scene, "s", "m", CONTEXT).map((a) => a.id), ["out"]);
+  assert.deepEqual(relationshipsWithin(scene, "s", "u", CONTEXT), []); // the other way round is another relationship
+  assert.deepEqual(relationshipsWithin(scene, "u", "w", "s"), []); // not up a level
 });

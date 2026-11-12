@@ -170,7 +170,10 @@ export class SceneTx {
 
   /** Adds elements at the given z-order position instead of on top. */
   insert(els: El[], index: number) {
-    for (const el of els) this.cur.set(el.id, el);
+    for (const el of els) {
+      this.cur.set(el.id, el);
+      this.dirty.add(el.id); // counts as a change on its own
+    }
     this.order.splice(index, 0, ...els.map((e) => e.id));
     this.changes++;
   }

@@ -122,3 +122,69 @@
 body .modal .modal-header-button.c4-modal-action {
   inset-inline-end: var(--c4-action-end, 48px);
 }
+
+/* A form's text fields fill the width of the form, next to a narrow column of their names. */
+.c4-form .c4-field .setting-item-info {
+  flex: 0 0 7em;
+}
+
+.c4-form .c4-field .setting-item-control {
+  flex: 1 1 auto;
+}
+
+.c4-form .c4-field .setting-item-control input,
+.c4-form .c4-field .setting-item-control textarea {
+  width: 100%;
+}
+
+.c4-form .c4-field .setting-item-control textarea {
+  resize: vertical;
+}
+
+/* A form's metadata: key: value rows in the column of the fields, with a button to remove each and one to add more. */
+.c4-form .c4-metadata {
+  align-items: flex-start;
+}
+
+.c4-form .c4-metadata .setting-item-control {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.c4-form .c4-metadata .setting-item-control > button {
+  align-self: flex-start;
+}
+
+.c4-metadata-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.c4-metadata-rows:empty {
+  display: none;
+}
+
+.c4-metadata-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.c4-form .c4-metadata .c4-metadata-row input {
+  min-width: 0;
+  width: auto;
+}
+
+.c4-metadata-key {
+  flex: 1 1 35%;
+}
+
+.c4-metadata-value {
+  flex: 1 1 65%;
+}
+
+.c4-metadata-colon {
+  color: var(--text-muted);
+}

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ELEMENT_WIDTH, KEY, MIN_HEIGHT, PADDING, arrowMidpoint, boxSize, edgePoint, laneLine, laneOffsets, normalOf, rayExit, elementData, elementLabel, lookOf, relationshipData, relationshipLabel, wrap } from "../src/model.ts";
+import { cleanMetadata, ELEMENT_WIDTH, KEY, MIN_HEIGHT, PADDING, arrowMidpoint, boxSize, edgePoint, laneLine, laneOffsets, normalOf, rayExit, elementData, elementLabel, lookOf, relationshipData, relationshipLabel, wrap } from "../src/model.ts";
 
 test("wrap breaks at word boundaries and keeps paragraphs", () => {
   assert.deepEqual(wrap("one two three four", 9), ["one two", "three", "four"]);
@@ -75,4 +75,11 @@ test("a lane is parallel to the line between the boxes, shifted the same way in 
   assert.deepEqual([back.start, back.end], [{ x: 300, y: 30 }, { x: 100, y: 30 }]);
   // An offset bigger than the box stays inside it.
   assert.equal(laneLine(a, b, n, 500).aimFrom.y, 90);
+});
+
+test("metadata keeps rows with a key, trimmed, the last of the same key winning", () => {
+  assert.deepEqual(cleanMetadata([[" owner ", " Team A "], ["", "lost"], ["  ", "lost too"], ["tier", "1"], ["owner", "Team B"]]), { owner: "Team B", tier: "1" });
+  assert.equal(cleanMetadata([]), undefined);
+  assert.equal(cleanMetadata([["", "x"]]), undefined);
+  assert.deepEqual(cleanMetadata([["empty", ""]]), { empty: "" });
 });
