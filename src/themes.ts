@@ -38,7 +38,7 @@ const outlined = (stroke: string, background = "#ffffff", text = stroke): Look =
 
 /** The colors of a theme from those of each kind; containers of a type without colors of its own have those of all containers. */
 function palette(p: {
-  person: Look; system: Look; container: Look; types?: Partial<Record<ContainerType, Look>>; component: Look; external: Look;
+  person: Look; system: Look; container: Look; types?: Partial<Record<ContainerType, Look>>; component: Look; external: Look; group?: Look;
 }): Colors {
   return {
     person: p.person,
@@ -46,6 +46,7 @@ function palette(p: {
     ...(Object.fromEntries(CONTAINER_TYPES.map((t) => [`container-${t}`, p.types?.[t] ?? p.container])) as Record<`container-${ContainerType}`, Look>),
     component: p.component,
     external: p.external,
+    group: p.group ?? DEFAULT_LOOKS.group,
   };
 }
 
@@ -74,6 +75,7 @@ const PALETTES: Record<Preset, Colors> = {
     },
     component: outlined("#9c36b5", "#eebefa", "#212529"),
     external: outlined("#868e96", "#e9ecef", "#495057"),
+    group: outlined("#495057"),
   }),
   // The colors of the sea and what lives in it.
   ocean: palette({
@@ -88,6 +90,7 @@ const PALETTES: Record<Preset, Colors> = {
     },
     component: outlined("#5f3dc4", "#b197fc", "#102a43"),
     external: outlined("#868e96", "#e9ecef", "#495057"),
+    group: outlined("#102a43"),
   }),
   // The colors of the evening sky, from red to purple.
   sunset: palette({
@@ -102,6 +105,7 @@ const PALETTES: Record<Preset, Colors> = {
     },
     component: outlined("#862e9c", "#e599f7", "#3b1f1f"),
     external: outlined("#868e96", "#e9ecef", "#495057"),
+    group: outlined("#3b1f1f"),
   }),
   // Greens of leaves and moss, with bark, water and autumn leaves.
   forest: palette({
@@ -116,6 +120,7 @@ const PALETTES: Record<Preset, Colors> = {
     },
     component: outlined("#d9480f", "#ffc078", "#1b2e1f"),
     external: outlined("#868e96", "#e9ecef", "#495057"),
+    group: outlined("#1b2e1f"),
   }),
   monochrome: palette({
     person: outlined("#212529"),
@@ -123,6 +128,7 @@ const PALETTES: Record<Preset, Colors> = {
     container: outlined("#343a40"),
     component: outlined("#495057"),
     external: outlined("#adb5bd", "#ffffff", "#868e96"),
+    group: outlined("#495057"),
   }),
 };
 

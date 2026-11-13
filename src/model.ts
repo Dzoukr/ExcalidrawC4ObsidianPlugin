@@ -80,6 +80,7 @@ export interface C4Group {
   name: string;
   parent?: string; // id of the group it is nested in
   members: string[]; // ids of the elements in it, not in the groups nested in it
+  look?: Partial<Look>; // colors of this group, over those of groups: its outline and its label
 }
 
 export function groupData(customData: Record<string, unknown> | undefined): C4Group | null {
@@ -228,9 +229,9 @@ export interface Look {
 export const LOOK_PARTS = ["stroke", "background", "text"] as const;
 export const LOOK_PART_TITLES: Record<keyof Look, string> = { stroke: "Outline", background: "Fill", text: "Text" };
 
-/** The types of element with colors of their own: the kinds, each type of container, and all external elements. */
+/** The types of element with colors of their own: the kinds, each type of container, all external elements, and groups. */
 export const LOOK_KEYS = [
-  "person", "system", ...CONTAINER_TYPES.map((t) => `container-${t}` as const), "component", "external",
+  "person", "system", ...CONTAINER_TYPES.map((t) => `container-${t}` as const), "component", "external", "group",
 ] as const;
 export type LookKey = (typeof LOOK_KEYS)[number];
 
@@ -240,14 +241,23 @@ export const LOOK_KEY_TITLES: Record<LookKey, string> = {
   ...(Object.fromEntries(CONTAINER_TYPES.map((t) => [`container-${t}`, `Container: ${CONTAINER_TYPE_TITLES[t]}`])) as Record<`container-${ContainerType}`, string>),
   component: "Component",
   external: "External element",
+  group: "Group",
 };
+
+/** The colors a group is drawn in: its outline and its label. It has no fill, so as not to hide what is behind it. */
+export const GROUP_LOOK_PARTS = ["stroke", "text"] as const satisfies readonly (keyof Look)[];
+
+/** The colors a type of element is drawn in. */
+export const lookPartsOf = (key: LookKey): readonly (keyof Look)[] => (key === "group" ? GROUP_LOOK_PARTS : LOOK_PARTS);
 
 // As in the C4 model's own diagrams: an outline and text in one color on a white fill, green for people, grey for external elements.
 const INTERNAL: Look = { background: "#ffffff", stroke: "#1168bd", text: "#1168bd" };
 const PERSON: Look = { background: "#ffffff", stroke: "#297e06", text: "#297e06" };
 const EXTERNAL: Look = { background: "#ffffff", stroke: "#6b6b6b", text: "#6b6b6b" };
+// Dark grey as a boundary; groups have no fill, the one here is only there for a theme to have every color.
+const GROUP: Look = { background: "#ffffff", stroke: "#444444", text: "#444444" };
 export const DEFAULT_LOOKS: Record<LookKey, Look> = Object.fromEntries(
-  LOOK_KEYS.map((k) => [k, k === "external" ? EXTERNAL : k === "person" ? PERSON : INTERNAL]),
+  LOOK_KEYS.map((k) => [k, k === "external" ? EXTERNAL : k === "person" ? PERSON : k === "group" ? GROUP : INTERNAL]),
 ) as Record<LookKey, Look>;
 
 let looks: Record<LookKey, Look> = DEFAULT_LOOKS;
@@ -288,6 +298,20 @@ export function ownLook(e: Pick<C4Element, "kind" | "type" | "external">, look: 
   const type = typeLookOf(e);
   const out: Partial<Look> = {};
   for (const p of LOOK_PARTS) if (isColor(look[p]) && look[p].toLowerCase() !== type[p].toLowerCase()) out[p] = look[p];
+  return Object.keys(out).length ? out : undefined;
+}
+
+/** The colors of a group: its own, where it has them, else those of groups in the drawing's theme. */
+export function groupLookOf(g: Pick<C4Group, "look">): Look {
+  const out = { ...looks.group };
+  for (const p of GROUP_LOOK_PARTS) if (isColor(g.look?.[p])) out[p] = g.look[p];
+  return out;
+}
+
+/** A group's own colors: only those that differ from the colors of groups, none when all are the same. */
+export function ownGroupLook(look: Partial<Look>): Partial<Look> | undefined {
+  const out: Partial<Look> = {};
+  for (const p of GROUP_LOOK_PARTS) if (isColor(look[p]) && look[p].toLowerCase() !== looks.group[p].toLowerCase()) out[p] = look[p];
   return Object.keys(out).length ? out : undefined;
 }
 

@@ -4,7 +4,7 @@ import {
 } from "obsidian";
 import {
   Selected, SelectedGroup, SelectedItem, SelectedRelationship, addElement, addGroup, addRelationship, canAdd, canEdit, canRelate, deleteBelow, diagramInfo, dissolveGroups, dropBoxes, hasKind, isElement,
-  isGroup, isRelationship, itemAt, itemOf, redrawResized, regroup, reverseRelationship, onlyC4Selected, refreshLooks, setDrawingTheme, themeOfDrawing, useDrawingColors, selectNext, selectedElements,
+  isGroup, isRelationship, itemAt, itemOf, redrawResized, regroup, restoreBoundary, reverseRelationship, onlyC4Selected, refreshLooks, setDrawingTheme, themeOfDrawing, useDrawingColors, selectNext, selectedElements,
   selectedItem, selectionShapes, updateElement, updateGroup, updateRelationship, zoomIn, zoomOut,
 } from "./actions";
 import { Guard, guardLevels, protectStore, refreshCanvas, selectionOf } from "./layertx";
@@ -12,7 +12,7 @@ import { AppState, El, ExcalidrawAPI, ExcalidrawView, VIEW_TYPE_EXCALIDRAW, isEx
 import {
   Box, C4Element, C4Kind, CONTAINER_TYPES, CONTAINER_TYPE_TITLES, ContainerType, Ink, KINDS, Shape, boundaryData, bounds, canBeExternal, cleanMetadata, elementData, groupData, hasTechnology,
   isContainerType, kindTitle, levelOf, shapeDrawing, shapeOf, zoomView, LOOK_KEYS, LOOK_KEY_TITLES, LOOK_PARTS, LOOK_PART_TITLES, Look, LookKey,
-  lookOf, ownLook, KEY,
+  lookOf, ownLook, KEY, C4Group, GROUP_LOOK_PARTS, groupLookOf, lookPartsOf, ownGroupLook,
 } from "./model";
 import {
   CUSTOM_THEME, Colors, Theme, UserTheme, colorsOf, copyColors, isPreset, mergeColors, newThemeId, parseThemes, setNewDrawingTheme, setUserThemes,
@@ -65,6 +65,7 @@ interface ViewState {
   selection: unknown; // the selection the panel shows, to refresh it only when the selection changes
   viewMode: boolean | undefined;
   drag?: Map<string, Box>; // where the C4 boxes and groups were when the pointer went down on the drawing, until it goes up
+  dropping?: Map<string, Box>; // the drag whose drop is being handled, once the pointer went up
   revision: number; // of the elements last checked for misplaced boxes
   guard?: Guard; // the elements of the levels above, put back when deleted
   groups?: Set<string>; // the boxes of the groups on the canvas at the last look, to tell which were deleted since
@@ -371,17 +372,22 @@ export default class ExcalidrawC4Plugin extends Plugin {
     if (!(e.target instanceof Node)) return;
     for (const s of this.states.values()) {
       if (!s.view.contentEl.contains(e.target)) continue;
-      s.drag = new Map(draggables(s.api.getSceneElements()).map((b) => [b.id, { x: b.x, y: b.y, width: b.width, height: b.height }]));
+      s.drag = new Map(tracked(s.api.getSceneElements()).map((b) => [b.id, { x: b.x, y: b.y, width: b.width, height: b.height }]));
     }
   }
 
   private onPointerUp() {
     for (const s of this.states.values()) {
       const before = s.drag;
-      if (!before) continue;
-      s.drag = undefined;
-      // After Excalidraw has finished the drag.
-      window.setTimeout(() => this.afterDrag(s, before), 0);
+      if (!before || s.dropping === before) continue;
+      s.dropping = before;
+      // After Excalidraw has finished the drag. Until then nothing is fitted to where things were dropped: a group
+      // fitted around a box dragged out of it would keep it, and would look dragged itself.
+      window.setTimeout(() => {
+        if (s.drag !== before) return; // another drag began
+        s.drag = undefined;
+        this.afterDrag(s, before);
+      }, 0);
     }
   }
 
@@ -393,10 +399,12 @@ export default class ExcalidrawC4Plugin extends Plugin {
       const was = before.get(b.id);
       return !!was && (off(was.width, b.width) || off(was.height, b.height));
     };
+    const selected = s.api.getAppState().selectedElementIds ?? {};
     const moved = els.flatMap((b) => {
       const was = before.get(b.id);
-      // A group resized rather than moved takes nothing along: it is fitted to what is in it again.
-      const fitted = !!groupData(b.customData) && resized(b);
+      // A group resized rather than moved takes nothing along: it is fitted to what is in it again. Only a group the
+      // user dragged is moved, not one fitted to what is in it.
+      const fitted = !!groupData(b.customData) && (resized(b) || !selected[b.id]);
       return was && !fitted && (off(was.x, b.x) || off(was.y, b.y)) ? [{ id: b.id, dx: b.x - was.x, dy: b.y - was.y }] : [];
     });
     // Groups first: a group dragged takes what is in it along, and what is dropped into a group goes in it.
@@ -404,6 +412,8 @@ export default class ExcalidrawC4Plugin extends Plugin {
     const messages = moved.length ? dropBoxes(s.view, moved.map((b) => b.id)) : [];
     // Boxes resized keep their new size, with their text and shape drawn again for it.
     redrawResized(s.view, els.filter((b) => elementData(b.customData) && resized(b)).map((b) => b.id));
+    // A boundary resized by hand goes back to fitting what is in it.
+    for (const b of tracked(s.api.getSceneElements())) if (boundaryData(b.customData) && resized(b)) restoreBoundary(s.view, b.id, before.get(b.id)!);
     for (const message of messages) new Notice(message);
     if (messages.length) this.refreshPanel(s);
     this.checkCanvas(s);
@@ -654,17 +664,30 @@ export default class ExcalidrawC4Plugin extends Plugin {
    * nothing selected.
    */
   private promptGroup(view: ExcalidrawView) {
-    const fields: Field[] = [{ key: "name", name: "Name", placeholder: "E.g. Customer service" }];
-    new FormModal(this.app, "Add group", fields, (v) => {
-      if (!addGroup(view, v.name ?? "")) new Notice(NO_EXCALIDRAW);
-    }).open();
+    this.groupForm(view, "Add", { group: "", name: "", members: [] }, (name, look) => addGroup(view, name, look));
   }
 
   private promptEditGroup(view: ExcalidrawView, { el, data }: SelectedGroup) {
+    this.groupForm(view, "Edit", data, (name, look) => updateGroup(view, el.id, name, look));
+  }
+
+  /** The form of a group, the same for adding and editing it: its name and its own colors. */
+  private groupForm(view: ExcalidrawView, verb: "Add" | "Edit", data: C4Group, save: (name: string, look?: Partial<Look>) => boolean) {
+    useDrawingColors(view); // the colors the form shows
+    let look: Partial<Look> = { ...data.look };
     const fields: Field[] = [{ key: "name", name: "Name", value: data.name, placeholder: "E.g. Customer service" }];
-    new FormModal(this.app, "Edit group", fields, (v) => {
-      if (!updateGroup(view, el.id, v.name ?? "")) new Notice(NO_EXCALIDRAW);
-    }, "Save").open();
+    const modal = new FormModal(this.app, `${verb} group`, fields, (v) => {
+      useDrawingColors(view); // for its own colors, those that differ from the colors of groups in the drawing's theme
+      if (!save(v.name ?? "", ownGroupLook(look))) new Notice(NO_EXCALIDRAW);
+    }, verb === "Edit" ? "Save" : "Add");
+    modal.extras.push(lookPickers(
+      "Colors", "",
+      () => groupLookOf({ look }),
+      (part, value) => (look = { ...look, [part]: value }),
+      () => (look = {}),
+      GROUP_LOOK_PARTS,
+    ).render);
+    modal.open();
   }
 
   /** Lets the user pick the drawing's theme. */
@@ -896,20 +919,22 @@ function shapePicture(el: HTMLElement, shape: Shape) {
 }
 
 /**
- * Color pickers for the outline, fill and text of an element or a type of element, each named, and a button resetting
- * them to their defaults. `render` adds them to a form as a setting of their own; `into` to a given setting.
+ * Color pickers for the outline, fill and text of an element or a type of element (or the ones of them given), each
+ * named, and a button resetting them to their defaults. `render` adds them to a form as a setting of their own; `into`
+ * to a given setting.
  */
 function lookPickers(
   name: string, desc: string, get: () => Look, set: (part: keyof Look, value: string) => void, reset: () => void,
+  parts: readonly (keyof Look)[] = LOOK_PARTS,
 ) {
   const pickers: Partial<Record<keyof Look, ColorComponent>> = {};
   const refresh = () => {
     const look = get();
-    for (const p of LOOK_PARTS) pickers[p]?.setValue(look[p]);
+    for (const p of parts) pickers[p]?.setValue(look[p]);
   };
   const into = (setting: Setting) => {
     setting.setClass("c4-look");
-    for (const p of LOOK_PARTS) {
+    for (const p of parts) {
       const field = setting.controlEl.createEl("label", { cls: "c4-look-color" });
       field.createSpan({ text: LOOK_PART_TITLES[p] });
       pickers[p] = new ColorComponent(field).setValue(get()[p]).onChange((v) => set(p, v));
@@ -979,6 +1004,9 @@ const reverseButton = (flip: () => void): HeaderButton => ({ icon: "arrow-left-r
 
 /** Whether a drawing has anything of C4 in it: elements, their layers or ghosts. */
 const hasC4 = (els: readonly El[]): boolean => els.some((e) => !e.isDeleted && !!e.customData?.[KEY]);
+
+/** What is watched while the pointer is down: what can be dragged and dropped, and the boundary, which can be resized. */
+const tracked = (els: readonly El[]): El[] => [...draggables(els), ...els.filter((e) => !e.isDeleted && e.type !== "text" && boundaryData(e.customData))];
 
 /** What can be dragged and dropped in a drawing: the C4 boxes and the boxes of groups. */
 const draggables = (els: readonly El[]): El[] => els.filter((e) => !e.containerId && !e.isDeleted && (elementData(e.customData) || groupData(e.customData)));
@@ -1215,6 +1243,7 @@ class C4SettingTab extends PluginSettingTab {
         theme.colors[key] = { ...colorsOf("classic")[key] };
         void this.plugin.saveThemes();
       },
+      lookPartsOf(key),
     ).into(setting);
   }
 

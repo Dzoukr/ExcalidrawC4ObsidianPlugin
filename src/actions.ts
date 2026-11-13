@@ -6,7 +6,7 @@ import { DiagramId, Scene, copiesOf, endOfLevel, endsOf, grid, levelsUpTo, newId
 import { LayerTx, readScene, readStore, selectionOf } from "./layertx";
 import { Theme, colorsOf, themeOfNewDrawings } from "./themes";
 import {
-  BOUNDARY_LABEL, BOUNDARY_PAD, Box, C4Element, C4Group, C4Relationship, GROUP_LABEL, GROUP_PAD, fittedGroup, groupData, groupLabelAt, ELEMENT_WIDTH, KEY, MIN_HEIGHT, PADDING, RELATIONSHIP_COLOR, Vec, ViewKind, allowedKinds, arrowMidpoint,
+  BOUNDARY_LABEL, BOUNDARY_PAD, Box, C4Element, C4Group, Look, boundaryData, groupLookOf, C4Relationship, GROUP_LABEL, GROUP_PAD, fittedGroup, groupData, groupLabelAt, ELEMENT_WIDTH, KEY, MIN_HEIGHT, PADDING, RELATIONSHIP_COLOR, Vec, ViewKind, allowedKinds, arrowMidpoint,
   boundaryLabel, bounds, boxSize, canBeExternal, center, contains, edgePoint, elementData, fittedBoundary, laneLine, laneOffsets, normalOf, elementLabel, lookOf, isGhost, makeWay, nameText, FONT_SIZE, NAME_FONT_SIZE, lookSignature, lookSignatureOf, useColors,
   overlaps, parentFor, parentKind, pushOut, relationshipData, textRoom, wayBack, relationshipLabel, zoomView, nearestIn, boxStyle, partOf, shapeOf, shapeParts, corners, shapeVersionOf, type Ink, MISPLACED_LOOK, SHAPE_VERSION, STROKE_WIDTH, LINE_WIDTH,
 } from "./model";
@@ -15,7 +15,6 @@ import type { Direction } from "./model";
 const GAP = 120; // between an element and the one added below it
 const RELATIONSHIP_FONT_SIZE = 14;
 const BOUNDARY_COLOR = "#444444";
-const GROUP_COLOR = BOUNDARY_COLOR;
 
 export interface Selected {
   el: El;
@@ -418,11 +417,16 @@ function withName(ea: ExcalidrawAutomate, text: El, size: { width: number; heigh
 
 /**
  * Redraws the boxes drawn before their shapes, looks and text were what they are now, such as a person without a head,
- * resizing them around their text.
+ * resizing them around their text; draws the groups in their colors.
  */
 function completeShapes(ea: ExcalidrawAutomate, ltx: LayerTx) {
   const scene = ltx.scene();
   for (const layer of scene.diagrams()) {
+    for (const g of new LayerGroups(scene, layer).all) {
+      const look = groupLookOf(g.data);
+      if (g.rect.strokeColor !== look.stroke) ltx.patch(g.rect.id, { strokeColor: look.stroke });
+      if (g.label && g.label.strokeColor !== look.text) ltx.patch(g.label.id, { strokeColor: look.text });
+    }
     for (const b of scene.boxes(layer)) {
       const data = elementData(b.customData)!;
       const parts = scene.parts(b.id);
@@ -1181,6 +1185,7 @@ function setGroup(ltx: LayerTx, rectId: string, data: C4Group) {
   const rect = ltx.get(rectId);
   if (!rect) return;
   if (!data.parent) delete data.parent;
+  if (!data.look) delete data.look;
   ltx.patch(rectId, { customData: { ...(rect.customData ?? {}), [KEY]: data } });
 }
 
@@ -1203,9 +1208,10 @@ const groupLabel = (data: Pick<C4Group, "name">) => data.name.trim() || "Unnamed
 /** Adds the dotted box of a group with its label at the bottom left, grouped so they are selected and moved together. */
 function addGroupBox(ea: ExcalidrawAutomate, ltx: LayerTx, b: Box, data: C4Group, layer: DiagramId, behind?: string): El {
   const s = ltx.api.getAppState();
+  const look = groupLookOf(data);
   ea.clear();
   Object.assign(ea.style, {
-    strokeColor: GROUP_COLOR,
+    strokeColor: look.stroke,
     backgroundColor: "transparent",
     fillStyle: "solid",
     strokeWidth: LINE_WIDTH,
@@ -1224,7 +1230,7 @@ function addGroupBox(ea: ExcalidrawAutomate, ltx: LayerTx, b: Box, data: C4Group
   const own = newId();
   const size = { ...b, width: Math.max(b.width, text.width + GROUP_PAD) };
   const rect: El = { ...ea.getElement(rectId), ...size, groupIds: [own], customData: { [KEY]: data } };
-  const label: El = { ...text, ...groupLabelAt(size, text), groupIds: [own], customData: { [KEY]: { part: rectId } } };
+  const label: El = { ...text, ...groupLabelAt(size, text), strokeColor: look.text, groupIds: [own], customData: { [KEY]: { part: rectId } } };
   if (behind) ltx.addBehind(rect, behind);
   else ltx.add(rect, layer);
   ltx.addInFront(label, rectId);
@@ -1236,7 +1242,7 @@ function addGroupBox(ea: ExcalidrawAutomate, ltx: LayerTx, b: Box, data: C4Group
  * group they are all right in, when they are all in the same one; with nothing selected, it is empty, in the middle of
  * the view.
  */
-export function addGroup(view: ExcalidrawView, name: string): boolean {
+export function addGroup(view: ExcalidrawView, name: string, look?: Partial<Look>): boolean {
   let rectId = "";
   const done = withLayers(view, (ea, ltx) => {
     const scene = ltx.scene();
@@ -1268,7 +1274,7 @@ export function addGroup(view: ExcalidrawView, name: string): boolean {
       const data = groupData(ltx.get(g.rect.id)?.customData);
       if (data) setGroup(ltx, g.rect.id, { ...data, parent: id });
     }
-    const data: C4Group = { group: id, name, members, ...(parent ? { parent: parent.data.group } : {}) };
+    const data: C4Group = { group: id, name, members, ...(parent ? { parent: parent.data.group } : {}), ...(look ? { look } : {}) };
     rectId = addGroupBox(ea, ltx, b, data, layer, behind).id;
     // The boundary makes room for the group and its label, keeping its own label clear of them.
     fitBoundary(ltx, layer);
@@ -1280,12 +1286,12 @@ export function addGroup(view: ExcalidrawView, name: string): boolean {
   return done;
 }
 
-/** Renames a group. */
-export function updateGroup(view: ExcalidrawView, rectId: string, name: string): boolean {
+/** Renames a group and gives it its own colors, or none; it is drawn in its colors as the change is done. */
+export function updateGroup(view: ExcalidrawView, rectId: string, name: string, look?: Partial<Look>): boolean {
   return withLayers(view, (ea, ltx) => {
     const data = groupData(ltx.get(rectId)?.customData);
     if (!data) return;
-    setGroup(ltx, rectId, { ...data, name });
+    setGroup(ltx, rectId, { ...data, name, look });
     const label = ltx.partsOf(rectId).find((p) => p.type === "text");
     if (!label) return;
     const text = groupLabel({ name });
@@ -1385,5 +1391,22 @@ export function dissolveGroups(view: ExcalidrawView, rectIds: string[]): boolean
       if (data) setGroup(ltx, g.rect.id, { ...data, parent });
     }
     fitBoundary(ltx, current);
+  });
+}
+
+/**
+ * Puts a boundary resized by hand back where it was and fits it to what is in it again: its size goes by its elements,
+ * and the elements around it keep their places.
+ */
+export function restoreBoundary(view: ExcalidrawView, rectId: string, was: Box): boolean {
+  return withLayers(view, (_ea, ltx) => {
+    const rect = ltx.get(rectId);
+    const scope = rect && boundaryData(rect.customData)?.boundary;
+    if (!scope || scope !== ltx.current) return;
+    const scene = ltx.scene();
+    // What was in it before, also what it no longer reaches.
+    const inner = scene.boxes(scope).filter((b) => scene.element(scene.modelId(b)!)?.parent === scope && contains(was, center(b)));
+    ltx.patch(rectId, { x: was.x, y: was.y, width: was.width, height: was.height });
+    fitBoundary(ltx, scope, inner.map((b) => b.id));
   });
 }

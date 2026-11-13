@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Scene } from "../src/layers.ts";
-import { LayerGroups, isGroupElement } from "../src/groups.ts";
+import { LayerGroups, area, isGroupElement } from "../src/groups.ts";
 import { ghostsFor } from "../src/ghosts.ts";
 import { CONTEXT, FONT_SIZE, GROUP_LABEL, GROUP_PAD, KEY, fittedGroup, groupData, groupLabelAt } from "../src/model.ts";
 import type { C4Element, C4Group, ViewKind } from "../src/model.ts";
@@ -150,4 +150,20 @@ test("a label scaled with its group is drawn in its own font size again", () => 
   assert.equal(label.height, 20);
   const fixed = apply(els, patches);
   assert.deepEqual(new LayerGroups(sceneOf({ [CONTEXT]: fixed }), CONTEXT).patches(), []);
+});
+
+test("a line takes up the area of its points, wherever it starts", () => {
+  const line = { ...base, type: "line", x: 300, y: 50, width: 240, height: 10, points: [[0, 0], [-120, 10], [-240, 0]] };
+  assert.deepEqual(area(line), { x: 60, y: 50, width: 240, height: 10 });
+  assert.deepEqual(area({ ...base, x: 1, y: 2 }), { x: 1, y: 2, width: 100, height: 100 });
+});
+
+test("a group fits the shape of a box, not where the lines drawing it start", () => {
+  const els = [
+    box("db", { kind: "container", id: "D", type: "database" }),
+    // The front of the top of a cylinder, drawn from right to left.
+    { ...base, id: "rim", type: "line", x: 100, y: 0, width: 100, height: 10, points: [[0, 0], [-100, 0]], customData: { [KEY]: { part: "db" } } },
+    ...group("g1", { group: "g", members: ["D"] }),
+  ];
+  assert.equal(new LayerGroups(sceneOf({ [CONTEXT]: els }), CONTEXT).fitted().get("g1")!.width, 100 + 2 * GROUP_PAD);
 });

@@ -196,3 +196,16 @@ test("each type of element has its colors from the settings, an element its own 
     useColors(DEFAULT_LOOKS);
   }
 });
+
+test("a group has the colors of groups in the theme, over which it keeps only its own outline and label", async () => {
+  const { groupLookOf, ownGroupLook } = await import("../src/model.ts");
+  try {
+    useColors({ ...DEFAULT_LOOKS, group: { background: "#ffffff", stroke: "#111111", text: "#222222" } });
+    assert.deepEqual(groupLookOf({}), { background: "#ffffff", stroke: "#111111", text: "#222222" });
+    assert.equal(groupLookOf({ look: { stroke: "#ff0000" } }).stroke, "#ff0000");
+    assert.deepEqual(ownGroupLook({ stroke: "#ff0000", text: "#222222", background: "#00ff00" }), { stroke: "#ff0000" });
+    assert.equal(ownGroupLook({ stroke: "#111111" }), undefined);
+  } finally {
+    useColors(DEFAULT_LOOKS);
+  }
+});

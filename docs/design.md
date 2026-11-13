@@ -29,7 +29,7 @@ Only people and systems, the elements of the system context, say whether they ar
 
 ### Colors and themes
 
-Every type of element has its colors, an outline, a fill and a text color: a person, a software system, each type of container, a component, and one set for all external elements. A **theme** gives them all, as in the mind map plugin:
+Every type of element has its colors, an outline, a fill and a text color: a person, a software system, each type of container, a component, and one set for all external elements. Groups have an outline and a label color only: they have no fill, so as not to hide what is behind them. A **theme** gives them all, as in the mind map plugin:
 
 - Built-in themes: **Classic** (the key of the C4 model's diagrams: blue on white, green for people, grey for external elements), **Filled** (the well-known filled C4 boxes, dark to light blue down the levels, green for people), **Pastel** (a color for each kind and type of container, as a mind map's branches), **Ocean**, **Sunset**, **Forest** and **Monochrome**.
 - The user's own themes, on the settings' Themes page: each started as a copy of any theme, renamed, deleted, its colors edited type by type, reordered; imported and exported as JSON through the clipboard or a file. Colors missing from an imported theme are the Classic ones. The colors the settings had before themes became the Custom theme.
@@ -71,7 +71,8 @@ A **group** shows elements of one layer that belong together, as the containers 
 - A group **fits what is in it**, its elements with the parts of their shapes and the groups nested in it, with room for its label, whenever the drawing changes, left out of the undo history as the marks of misplaced boxes are. An empty group keeps its size. A layer's boundary holds the groups of the elements in it.
 - **Dragging**: a box or group dropped goes right into the innermost group under its center, or out of every group; a group dragged takes what is in it along when dropped (a group resized is fitted again instead). One undo step after the drag.
 - A new element goes into the group of the selected box it is added below, or into the selected group, below what is in it, when it belongs on that side of the boundary.
-- Editing a group (form, Space, Enter, double-click on its outline or label) renames it. Deleting it leaves its elements and the groups nested in it, which go into the group it was in, if any (one undo step after the delete). An element the plugin takes out of a layer leaves its group there; one deleted by hand stays a member until it is back, for undo.
+- Groups are drawn in the colors of groups in the drawing's theme (dark grey in Classic), or in colors of their own for the outline and the label, set in their form as an element's are.
+- Editing a group (form, Space, Enter, double-click on its outline or label) renames it and sets its colors. Deleting it leaves its elements and the groups nested in it, which go into the group it was in, if any (one undo step after the delete). An element the plugin takes out of a layer leaves its group there; one deleted by hand stays a member until it is back, for undo.
 
 ## Done (0.1.0)
 
@@ -123,7 +124,7 @@ Each layer edits only its own level: the elements of its scope, inside the bound
 - The elements around the boundary come down from the levels above: as neighbours on zooming in, and with the relationships carried down. A neighbour stays only while a relationship ties it to the scope or to something inside it, in any layer, or to the boundary in this one: one that has none any more leaves the layer when the layer comes on the canvas (zooming in or out, which starts the undo history over), and shows again among the dimmed levels above. Until then it can be deleted by hand.
 - What is drawn in the layer is in full color; the levels above are shown dimmed around it. Grey is the color of external elements, a thick red dashed outline marks an element where it does not belong.
 
-The boundary fits the scope's elements in it, growing or shrinking, with room for its label and never smaller than one element; the boxes around it keep their distance from its edges. It is fitted again whenever the plugin adds to or edits the layer and on zooming into it.
+The boundary fits the scope's elements in it, growing or shrinking, with room for its label and never smaller than one element; the boxes around it keep their distance from its edges. It is fitted again whenever the plugin adds to or edits the layer and on zooming into it. Resized by hand, it goes back to fitting the elements it held before (one undo step after the resize); it can still be moved.
 
 ### Moving elements between parents
 

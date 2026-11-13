@@ -25,6 +25,19 @@ export const isGroupElement = (byId: ReadonlyMap<string, El>, e: El): boolean =>
 const same = (a: number, b: number) => Math.abs(a - b) < 0.5;
 
 /**
+ * The area an element takes up. A line's position is its first point, not its top left corner: a line drawn from right
+ * to left, as the front of the top of a cylinder, lies left of it.
+ */
+export function area(e: El): Box {
+  if (!e.points?.length) return { x: e.x, y: e.y, width: e.width, height: e.height };
+  const xs = e.points.map(([x]) => e.x + x);
+  const ys = e.points.map(([, y]) => e.y + y);
+  const x = Math.min(...xs);
+  const y = Math.min(...ys);
+  return { x, y, width: Math.max(...xs) - x, height: Math.max(...ys) - y };
+}
+
+/**
  * The font size and size of a group's label in the font size it is drawn in: Excalidraw scales the label with the box
  * when the two are resized together, and the size of a text goes with its font size.
  */
@@ -110,7 +123,7 @@ export class LayerGroups {
 
   /** What a box takes up with the parts of its shape, such as the head of a person. */
   extent(box: El): Box {
-    return bounds([box, ...this.scene.parts(box.id)])!;
+    return bounds([box, ...this.scene.parts(box.id)].map(area))!;
   }
 
   /** Every group fitted to what is in it, by the id of its box: the groups nested in it first. */
