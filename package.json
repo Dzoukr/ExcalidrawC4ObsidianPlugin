@@ -1,6 +1,6 @@
 {
-  "name": "excalidraw-c4",
-  "version": "0.1.0",
+  "name": "excalidraw-c-four-model",
+  "version": "1.0.0",
   "description": "C4 model diagrams inside Excalidraw drawings in Obsidian",
   "main": "main.js",
   "private": true,

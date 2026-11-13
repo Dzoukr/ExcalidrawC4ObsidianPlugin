@@ -7,13 +7,20 @@ export const KINDS = ["person", "system", "container", "component"] as const;
 export type C4Kind = (typeof KINDS)[number];
 
 /** What a container is, which gives its box its shape. */
-export const CONTAINER_TYPES = ["generic", "server", "spa", "database", "storage", "directory"] as const;
+export const CONTAINER_TYPES = [
+  "generic", "server", "web", "mobile", "desktop", "function", "job", "queue", "database", "storage", "directory",
+] as const;
 export type ContainerType = (typeof CONTAINER_TYPES)[number];
 
 export const CONTAINER_TYPE_TITLES: Record<ContainerType, string> = {
   generic: "Generic",
-  server: "Server-side app",
-  spa: "Single-page app",
+  server: "Server app",
+  web: "Web app",
+  mobile: "Mobile app",
+  desktop: "Desktop app",
+  function: "Function",
+  job: "Job",
+  queue: "Message queue",
   database: "Database",
   storage: "Storage",
   directory: "Directory",
@@ -335,7 +342,9 @@ export const LINE_WIDTH = 2;
  * a rectangle, as Excalidraw only puts text in a rectangle, ellipse or diamond; the other shapes are drawn by parts
  * behind it, grouped with it.
  */
-export type Shape = "rounded" | "person" | "component" | "terminal" | "cylinder" | "bucket" | "folder" | "browser";
+export type Shape =
+  | "rounded" | "person" | "component" | "terminal" | "cylinder" | "bucket" | "folder" | "browser" | "phone" | "monitor" | "lambda" | "clock"
+  | "pipe";
 
 const CONTAINER_SHAPES: Record<ContainerType, Shape> = {
   generic: "rounded",
@@ -343,7 +352,12 @@ const CONTAINER_SHAPES: Record<ContainerType, Shape> = {
   directory: "folder",
   database: "cylinder",
   server: "terminal",
-  spa: "browser",
+  web: "browser",
+  mobile: "phone",
+  desktop: "monitor",
+  function: "lambda",
+  job: "clock",
+  queue: "pipe",
 };
 
 /** The shape of an element; only containers have a type, which picks theirs. */
@@ -391,7 +405,9 @@ export const RIM = 14; // half the height of the top of a cylinder or bucket
 export const BAR = 22; // the bar at the top of a browser window
 export const TAB = 14; // how far the tab of a folder stands up
 export const HEAD = 104; // the head of a person
-export const PROMPT = 28; // room for the prompt in the corner of a terminal
+export const PROMPT = 28; // room for the prompt in the corner of a terminal, the lambda of a function, the clock of a job
+export const BEZEL = 22; // the frame of a phone lying on its side, left and right of its screen
+export const STAND = 24; // the stand under a monitor
 
 /** Points along an ellipse from one angle to another, going clockwise on the screen. */
 function arc(cx: number, cy: number, rx: number, ry: number, from: number, to: number, n = 16): Vec[] {
@@ -472,6 +488,50 @@ export function shapeParts(shape: Shape, b: Box): Part[] {
         { type: "rectangle", box: { x: field, y: y + BAR / 2 - 5, width: x + w - 8 - field, height: 10 }, round: 5, stroke: "body", fill: "body" },
       ];
     }
+    case "phone":
+      // A phone lying on its side: its screen between a speaker on the left and a home button on the right.
+      return [
+        { type: "rectangle", box: b, round: 18, stroke: "outline", fill: "body" },
+        { type: "rectangle", box: { x: x + BEZEL, y: y + 8, width: w - 2 * BEZEL, height: h - 16 }, round: 4, stroke: "outline", fill: "none" },
+        { type: "rectangle", box: { x: x + BEZEL / 2 - 2.5, y: y + h / 2 - 14, width: 5, height: 28 }, round: 3, stroke: "detail", fill: "detail" },
+        { type: "ellipse", box: { x: x + w - BEZEL / 2 - 5, y: y + h / 2 - 5, width: 10, height: 10 }, stroke: "detail", fill: "none" },
+      ];
+    case "monitor": {
+      // A screen on a stand: a straight neck down to a foot drawn as a line, as large as the box lets them be, so that
+      // the stand of a small picture of it is small too.
+      const cx = x + w / 2;
+      const s = Math.min(STAND, h * 0.2);
+      const foot = y + h - 1.5; // half the outline in, so that the line stays inside the box
+      const half = Math.min(w * 0.4, s * 4.5) / 2;
+      return [
+        { type: "rectangle", box: { x, y, width: w, height: h - s }, round: SMALL_RADIUS, stroke: "outline", fill: "body" },
+        { type: "rectangle", box: { x: cx - s * 0.2, y: y + h - s, width: s * 0.4, height: foot - (y + h - s) }, stroke: "outline", fill: "body" },
+        { type: "line", points: [{ x: cx - half, y: foot }, { x: cx + half, y: foot }], stroke: "outline", fill: "none" },
+      ];
+    }
+    case "lambda":
+      // A λ in the top left corner.
+      return [
+        { type: "rectangle", box: b, round: RADIUS, stroke: "outline", fill: "body" },
+        { type: "line", points: [{ x: x + 12, y: y + 8 }, { x: x + 15, y: y + 8 }, { x: x + 24, y: y + 27 }], stroke: "detail", fill: "none" },
+        { type: "line", points: [{ x: x + 18.8, y: y + 16 }, { x: x + 12, y: y + 27 }], stroke: "detail", fill: "none" },
+      ];
+    case "clock":
+      // A clock in the top left corner.
+      return [
+        { type: "rectangle", box: b, round: RADIUS, stroke: "outline", fill: "body" },
+        { type: "ellipse", box: { x: x + 10, y: y + 8, width: 19, height: 19 }, stroke: "detail", fill: "none" },
+        { type: "line", points: [{ x: x + 19.5, y: y + 11.5 }, { x: x + 19.5, y: y + 17.5 }, { x: x + 24, y: y + 20 }], stroke: "detail", fill: "none" },
+      ];
+    case "pipe": {
+      // A cylinder lying on its side, as a queue is drawn: the outline, and the front of its right end.
+      const [left, right, cy] = [x + RIM, x + w - RIM, y + h / 2];
+      const outline = [...arc(right, cy, RIM, h / 2, -Math.PI / 2, Math.PI / 2), ...arc(left, cy, RIM, h / 2, Math.PI / 2, (3 * Math.PI) / 2)];
+      return [
+        { type: "line", points: [...outline, outline[0]], stroke: "outline", fill: "body" },
+        { type: "line", points: arc(right, cy, RIM, h / 2, Math.PI / 2, (3 * Math.PI) / 2), stroke: "outline", fill: "none" },
+      ];
+    }
   }
 }
 
@@ -480,13 +540,19 @@ export function shapeDrawing(shape: Shape, b: Box): Part[] {
   return shape === "rounded" ? [{ type: "rectangle", box: b, round: RADIUS, stroke: "outline", fill: "body" }] : shapeParts(shape, b);
 }
 
-/** Room a shape takes inside its box besides the text: the top of a cylinder, the bar of a browser window. */
-function shapeRoom(shape: Shape): number {
-  if (shape === "cylinder" || shape === "bucket") return 2 * RIM;
-  if (shape === "browser") return BAR;
-  if (shape === "folder") return TAB;
-  if (shape === "terminal") return PROMPT;
-  return 0;
+/**
+ * Room a shape takes inside its box besides the text, on each side as the text is centered: above and below it, such as
+ * the top of a cylinder or the bar of a browser window, and left and right of it, such as the ends of a pipe.
+ */
+function shapeRoom(shape: Shape): Vec {
+  if (shape === "cylinder" || shape === "bucket") return { x: 0, y: 2 * RIM };
+  if (shape === "browser") return { x: 0, y: BAR };
+  if (shape === "folder") return { x: 0, y: TAB };
+  if (shape === "terminal" || shape === "lambda" || shape === "clock") return { x: 0, y: PROMPT };
+  if (shape === "monitor") return { x: 0, y: STAND };
+  if (shape === "phone") return { x: BEZEL, y: 0 };
+  if (shape === "pipe") return { x: 2 * RIM, y: 0 };
+  return { x: 0, y: 0 };
 }
 
 /** Key under which a part of a shape keeps the id of its box. */
@@ -666,10 +732,10 @@ export const boxSize = (text: { width: number; height: number }, shape: Shape = 
 };
 
 /** The least size of an element's box: room for its text and its shape, as for a box resized by hand. */
-export const textRoom = (text: { width: number; height: number }, shape: Shape = "rounded") => ({
-  width: text.width + 2 * PADDING,
-  height: text.height + 2 * PADDING + 2 * shapeRoom(shape),
-});
+export const textRoom = (text: { width: number; height: number }, shape: Shape = "rounded") => {
+  const room = shapeRoom(shape);
+  return { width: text.width + 2 * PADDING + 2 * room.x, height: text.height + 2 * PADDING + 2 * room.y };
+};
 
 /** Middle of an arrow, where its label goes: halfway along a straight arrow, else its middle point. */
 export function arrowMidpoint(arrow: Vec & { points?: number[][] }): Vec {

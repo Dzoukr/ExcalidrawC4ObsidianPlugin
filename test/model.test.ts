@@ -106,7 +106,12 @@ test("a container's type gives its shape; without one it is generic, a rounded b
   assert.equal(shapeOf({ kind: "container", type: "storage" }), "bucket");
   assert.equal(shapeOf({ kind: "container", type: "directory" }), "folder");
   assert.equal(shapeOf({ kind: "container", type: "server" }), "terminal");
-  assert.equal(shapeOf({ kind: "container", type: "spa" }), "browser");
+  assert.equal(shapeOf({ kind: "container", type: "web" }), "browser");
+  assert.equal(shapeOf({ kind: "container", type: "mobile" }), "phone");
+  assert.equal(shapeOf({ kind: "container", type: "desktop" }), "monitor");
+  assert.equal(shapeOf({ kind: "container", type: "function" }), "lambda");
+  assert.equal(shapeOf({ kind: "container", type: "job" }), "clock");
+  assert.equal(shapeOf({ kind: "container", type: "queue" }), "pipe");
   assert.equal(shapeOf({ kind: "component", type: "database" }), "component");
   assert.equal(shapeOf({ kind: "system", type: "database" }), "rounded");
 });
@@ -124,7 +129,7 @@ test("the parts of a shape lie in its box, except a person's head above it and a
   const box = { x: 10, y: 20, width: 240, height: 150 };
   assert.deepEqual(shapeParts("rounded", box), []);
   const inside = (x: number, y: number) => x >= box.x - 1e-9 && x <= box.x + box.width + 1e-9 && y >= box.y - 1e-9 && y <= box.y + box.height + 1e-9;
-  for (const shape of ["terminal", "cylinder", "bucket", "folder", "browser"] as const) {
+  for (const shape of ["terminal", "cylinder", "bucket", "folder", "browser", "phone", "monitor", "lambda", "clock", "pipe"] as const) {
     const parts = shapeParts(shape, box);
     assert.ok(parts.length, shape);
     for (const p of parts) {
@@ -145,11 +150,16 @@ test("the parts of a shape lie in its box, except a person's head above it and a
   for (const s of small) assert.ok(s.box!.x < box.x && s.box!.x + s.box!.width > box.x, "the small boxes stand out of the left side");
 });
 
-test("a shape with a top or a bar leaves the text room", () => {
+test("a shape with a top, a bar or ends leaves the text room", () => {
   const text = { width: 100, height: 140 };
   assert.ok(boxSize(text, "cylinder").height > boxSize(text).height);
   assert.ok(boxSize(text, "browser").height > boxSize(text).height);
   assert.ok(boxSize(text, "terminal").height > boxSize(text).height);
+  assert.ok(boxSize(text, "monitor").height > boxSize(text).height);
+  const wide = { width: 260, height: 40 };
+  assert.ok(boxSize(wide, "pipe").width > boxSize(wide).width);
+  assert.ok(boxSize(wide, "phone").width > boxSize(wide).width);
+  assert.equal(boxSize(wide, "pipe").height, boxSize(wide).height);
 });
 
 test("a part keeps the id of its box", () => {

@@ -1,6 +1,6 @@
 import { AppState, El, ExcalidrawAutomate, ExcalidrawView, getEA } from "./excalidraw";
 import { ghostSource } from "./ghosts";
-import { Group, LayerGroups } from "./groups";
+import { Group, LayerGroups, labelSize } from "./groups";
 import type { Shape } from "./highlight";
 import { DiagramId, Scene, copiesOf, endOfLevel, endsOf, grid, levelsUpTo, newId, nextSlot, ofLevel, relationshipsWithin, row, unrelated } from "./layers";
 import { LayerTx, readScene, readStore, selectionOf } from "./layertx";
@@ -559,11 +559,23 @@ function fitBoundary(ltx: LayerTx, layer: DiagramId, placed: string[] = []) {
   );
   // With the groups of those elements, and room for their labels.
   const held = new LayerGroups(scene, layer).around(new Set(inner.map((b) => b.id)));
-  const fitted = fittedBoundary(rect, [...inner, ...held], label);
+  // The label in the font size of the boundary, which Excalidraw scales with the boundary resized with it.
+  const size = label && labelSize(label);
+  const scaled = !!label?.fontSize && label.fontSize !== FONT_SIZE;
+  const fitted = fittedBoundary(rect, [...inner, ...held], size);
   const same = (["x", "y", "width", "height"] as const).every((k) => Math.abs(fitted[k] - rect[k]) < 0.5);
   if (!same) ltx.patch(rect.id, fitted);
-  const labelAt = label && { x: fitted.x + BOUNDARY_PAD / 2, y: fitted.y + fitted.height - label.height - BOUNDARY_PAD / 4 };
-  if (label && labelAt && (Math.abs(labelAt.x - label.x) >= 0.5 || Math.abs(labelAt.y - label.y) >= 0.5)) ltx.patch(label.id, labelAt);
+  if (label && size) {
+    const at = { x: fitted.x + BOUNDARY_PAD / 2, y: fitted.y + fitted.height - size.height - BOUNDARY_PAD / 4 };
+    if (scaled || Math.abs(at.x - label.x) >= 0.5 || Math.abs(at.y - label.y) >= 0.5) ltx.patch(label.id, scaled ? { ...at, ...size } : at);
+    // The boundary and its label are one group, also in drawings made before they were.
+    const group = rect.groupIds?.[0];
+    if (!group || rect.groupIds!.length !== 1 || label.groupIds?.length !== 1 || label.groupIds[0] !== group) {
+      const own = group ?? newId();
+      ltx.patch(rect.id, { groupIds: [own] });
+      ltx.patch(label.id, { groupIds: [own] });
+    }
+  }
   const way = makeWay(rect, fitted);
   for (const b of scene.boxes(layer)) {
     if (inner.includes(b)) continue;
@@ -1014,7 +1026,9 @@ function addBoundary(ea: ExcalidrawAutomate, ltx: LayerTx, b: Box, scope: C4Elem
   const m = ea.measureText(label);
   const textId = ea.addText(b.x + BOUNDARY_PAD / 2, b.y + b.height - m.height - BOUNDARY_PAD / 4, label, { textAlign: "left" });
   const tag = { [KEY]: { boundary: scope.id } };
-  for (const id of [rectId, textId]) ltx.add({ ...ea.getElement(id), customData: tag }, layer);
+  // Grouped, so that the label is selected and moved with the boundary.
+  const own = newId();
+  for (const id of [rectId, textId]) ltx.add({ ...ea.getElement(id), groupIds: [own], customData: tag }, layer);
 }
 
 /**
@@ -1407,6 +1421,30 @@ export function restoreBoundary(view: ExcalidrawView, rectId: string, was: Box):
     // What was in it before, also what it no longer reaches.
     const inner = scene.boxes(scope).filter((b) => scene.element(scene.modelId(b)!)?.parent === scope && contains(was, center(b)));
     ltx.patch(rectId, { x: was.x, y: was.y, width: was.width, height: was.height });
+    fitBoundary(ltx, scope, inner.map((b) => b.id));
+  });
+}
+
+/**
+ * Takes what was in a boundary moved by hand along with it, as a group takes what is in it: the scope's elements that
+ * were in it, with their groups, and its label. What was dragged with it, given by the ids of the boxes and groups
+ * dragged, already moved, also when its group was dragged. One undo step after the move.
+ */
+export function moveBoundary(view: ExcalidrawView, rectId: string, was: Box, dragged: ReadonlySet<string>): boolean {
+  return withLayers(view, (_ea, ltx) => {
+    const rect = ltx.get(rectId);
+    const scope = rect && boundaryData(rect.customData)?.boundary;
+    if (!scope || scope !== ltx.current) return;
+    const [dx, dy] = [rect.x - was.x, rect.y - was.y];
+    const scene = ltx.scene();
+    const groups = new LayerGroups(scene, scope);
+    const cameAlong = (g: Group | undefined) => !!g && [g, ...groups.ancestors(g)].some((x) => dragged.has(x.rect.id));
+    const inner = scene.boxes(scope).filter((b) => {
+      const id = scene.modelId(b)!;
+      return scene.element(id)?.parent === scope && contains(was, center(b)) && !dragged.has(b.id) && !cameAlong(groups.groupOf(id));
+    });
+    for (const b of inner) moveBox(ltx, b.id, dx, dy);
+    // The label goes back to its corner, and relationships carried down to the boundary meet its edge again.
     fitBoundary(ltx, scope, inner.map((b) => b.id));
   });
 }

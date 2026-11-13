@@ -4,7 +4,7 @@ import {
 } from "obsidian";
 import {
   Selected, SelectedGroup, SelectedItem, SelectedRelationship, addElement, addGroup, addRelationship, canAdd, canEdit, canRelate, deleteBelow, diagramInfo, dissolveGroups, dropBoxes, hasKind, isElement,
-  isGroup, isRelationship, itemAt, itemOf, redrawResized, regroup, restoreBoundary, reverseRelationship, onlyC4Selected, refreshLooks, setDrawingTheme, themeOfDrawing, useDrawingColors, selectNext, selectedElements,
+  isGroup, isRelationship, itemAt, itemOf, moveBoundary, redrawResized, regroup, restoreBoundary, reverseRelationship, onlyC4Selected, refreshLooks, setDrawingTheme, themeOfDrawing, useDrawingColors, selectNext, selectedElements,
   selectedItem, selectionShapes, updateElement, updateGroup, updateRelationship, zoomIn, zoomOut,
 } from "./actions";
 import { Guard, guardLevels, protectStore, refreshCanvas, selectionOf } from "./layertx";
@@ -407,6 +407,12 @@ export default class ExcalidrawC4Plugin extends Plugin {
       const fitted = !!groupData(b.customData) && (resized(b) || !selected[b.id]);
       return was && !fitted && (off(was.x, b.x) || off(was.y, b.y)) ? [{ id: b.id, dx: b.x - was.x, dy: b.y - was.y }] : [];
     });
+    // A boundary moved takes what was in it along, before anything dropped is put where it landed.
+    const dragged = new Set(moved.map((m) => m.id));
+    for (const b of tracked(s.api.getSceneElements())) {
+      const was = before.get(b.id);
+      if (boundaryData(b.customData) && was && !resized(b) && (off(was.x, b.x) || off(was.y, b.y))) moveBoundary(s.view, b.id, was, dragged);
+    }
     // Groups first: a group dragged takes what is in it along, and what is dropped into a group goes in it.
     if (moved.length) regroup(s.view, moved);
     const messages = moved.length ? dropBoxes(s.view, moved.map((b) => b.id)) : [];
