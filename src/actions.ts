@@ -1,19 +1,21 @@
 import { AppState, El, ExcalidrawAutomate, ExcalidrawView, getEA } from "./excalidraw";
 import { ghostSource } from "./ghosts";
+import { Group, LayerGroups } from "./groups";
 import type { Shape } from "./highlight";
 import { DiagramId, Scene, copiesOf, endOfLevel, endsOf, grid, levelsUpTo, newId, nextSlot, ofLevel, relationshipsWithin, row, unrelated } from "./layers";
 import { LayerTx, readScene, readStore, selectionOf } from "./layertx";
 import { Theme, colorsOf, themeOfNewDrawings } from "./themes";
 import {
-  BOUNDARY_LABEL, BOUNDARY_PAD, Box, C4Element, C4Relationship, ELEMENT_WIDTH, KEY, MIN_HEIGHT, PADDING, RELATIONSHIP_COLOR, Vec, ViewKind, allowedKinds, arrowMidpoint,
+  BOUNDARY_LABEL, BOUNDARY_PAD, Box, C4Element, C4Group, C4Relationship, GROUP_LABEL, GROUP_PAD, fittedGroup, groupData, groupLabelAt, ELEMENT_WIDTH, KEY, MIN_HEIGHT, PADDING, RELATIONSHIP_COLOR, Vec, ViewKind, allowedKinds, arrowMidpoint,
   boundaryLabel, bounds, boxSize, canBeExternal, center, contains, edgePoint, elementData, fittedBoundary, laneLine, laneOffsets, normalOf, elementLabel, lookOf, isGhost, makeWay, nameText, FONT_SIZE, NAME_FONT_SIZE, lookSignature, lookSignatureOf, useColors,
-  overlaps, parentFor, parentKind, pushOut, relationshipData, wayBack, relationshipLabel, zoomView, nearestIn, boxStyle, partOf, shapeOf, shapeParts, corners, shapeVersionOf, type Ink, MISPLACED_LOOK, SHAPE_VERSION, STROKE_WIDTH, LINE_WIDTH,
+  overlaps, parentFor, parentKind, pushOut, relationshipData, textRoom, wayBack, relationshipLabel, zoomView, nearestIn, boxStyle, partOf, shapeOf, shapeParts, corners, shapeVersionOf, type Ink, MISPLACED_LOOK, SHAPE_VERSION, STROKE_WIDTH, LINE_WIDTH,
 } from "./model";
 import type { Direction } from "./model";
 
 const GAP = 120; // between an element and the one added below it
 const RELATIONSHIP_FONT_SIZE = 14;
 const BOUNDARY_COLOR = "#444444";
+const GROUP_COLOR = BOUNDARY_COLOR;
 
 export interface Selected {
   el: El;
@@ -25,6 +27,16 @@ export interface SelectedRelationship {
   data: C4Relationship;
 }
 
+export interface SelectedGroup {
+  el: El;
+  data: C4Group;
+}
+
+export type SelectedItem = Selected | SelectedRelationship | SelectedGroup;
+
+/** Whether an element carries C4 data that can be selected: an element's box, a relationship or a group. */
+const isItem = (el: El) => !!(elementData(el.customData) || relationshipData(el.customData) || groupData(el.customData));
+
 /** The box or arrow a text belongs to, the box a part of a shape belongs to, else the element itself. */
 function ownerOf(byId: ReadonlyMap<string, El>, el: El | undefined): El | undefined {
   if (el?.containerId) return byId.get(el.containerId);
@@ -33,8 +45,8 @@ function ownerOf(byId: ReadonlyMap<string, El>, el: El | undefined): El | undefi
 }
 
 /**
- * The selected elements carrying C4 data; selecting a box's or arrow's text, or a part of a box's shape, counts as
- * selecting the box or arrow.
+ * The selected elements carrying C4 data; selecting a box's or arrow's text, or a part of a box's shape (a group's
+ * label among them), counts as selecting the box or arrow.
  */
 function selectedC4(view: ExcalidrawView): El[] {
   const api = view.excalidrawAPI;
@@ -44,7 +56,7 @@ function selectedC4(view: ExcalidrawView): El[] {
   for (const [id, on] of Object.entries(api.getAppState().selectedElementIds ?? {})) {
     if (!on) continue;
     const el = ownerOf(byId, byId.get(id));
-    if (el && (elementData(el.customData) || relationshipData(el.customData))) out.set(el.id, el);
+    if (el && isItem(el)) out.set(el.id, el);
   }
   return [...out.values()];
 }
@@ -57,21 +69,27 @@ export function selectedElements(view: ExcalidrawView): Selected[] {
   });
 }
 
-/** The one selected C4 element or relationship, or null when there is none or more. */
-export function selectedItem(view: ExcalidrawView): Selected | SelectedRelationship | null {
+/** The one selected C4 element, relationship or group, or null when there is none or more. */
+export function selectedItem(view: ExcalidrawView): SelectedItem | null {
   const [el, ...rest] = selectedC4(view);
   return el && !rest.length ? itemOf(el) : null;
 }
 
-/** A C4 element or relationship with its data, or null for another element. */
-export function itemOf(el: El): Selected | SelectedRelationship | null {
+/** A C4 element, relationship or group with its data, or null for another element. */
+export function itemOf(el: El): SelectedItem | null {
   const element = elementData(el.customData);
   if (element) return { el, data: element };
   const relationship = relationshipData(el.customData);
-  return relationship ? { el, data: relationship } : null;
+  if (relationship) return { el, data: relationship };
+  const group = groupData(el.customData);
+  return group ? { el, data: group } : null;
 }
 
-export const isRelationship = (item: Selected | SelectedRelationship): item is SelectedRelationship => "relationship" in item.data;
+export const isRelationship = (item: SelectedItem): item is SelectedRelationship => "relationship" in item.data;
+
+export const isGroup = (item: SelectedItem): item is SelectedGroup => "members" in item.data && "group" in item.data;
+
+export const isElement = (item: SelectedItem): item is Selected => !isRelationship(item) && !isGroup(item);
 
 /** The part of the drawing in view. */
 const viewport = (s: AppState): Box => {
@@ -127,14 +145,14 @@ export function selectionShapes(view: ExcalidrawView): Shape[] {
   });
 }
 
-/** Whether all that is selected is C4 elements and relationships, or nothing is. */
+/** Whether all that is selected is C4 elements, relationships and groups, or nothing is. */
 export function onlyC4Selected(view: ExcalidrawView): boolean {
   const api = view.excalidrawAPI!;
   const byId = new Map(api.getSceneElements().map((e) => [e.id, e]));
   return Object.entries(api.getAppState().selectedElementIds ?? {}).every(([id, on]) => {
     if (!on) return true;
     const e = ownerOf(byId, byId.get(id));
-    return !!e && (!!elementData(e.customData) || !!relationshipData(e.customData));
+    return !!e && isItem(e);
   });
 }
 
@@ -154,16 +172,17 @@ export function diagramInfo(view: ExcalidrawView): DiagramInfo {
     title: levelName(scene, current),
     // With more than one element selected, only a relationship can be added.
     kinds: selectedElements(view).length > 1 ? [] : allowedKinds(v?.view ?? null),
-    zoomIn: !!item && !isRelationship(item) && !!zoomView(item.data),
+    zoomIn: !!item && isElement(item) && !!zoomView(item.data),
     zoomOut: v ? levelName(scene, scene.parentLayer(v.scope)) : null,
   };
 }
 
 /**
- * Whether an element or relationship can be edited in the layer on the canvas: an element of its level, or a
- * relationship with an end there.
+ * Whether an element, relationship or group can be edited in the layer on the canvas: an element of its level, a
+ * relationship with an end there, or a group, which is only ever shown on its own level.
  */
-export function canEdit(view: ExcalidrawView, item: Selected | SelectedRelationship): boolean {
+export function canEdit(view: ExcalidrawView, item: SelectedItem): boolean {
+  if (isGroup(item)) return true;
   const { scene, current } = readScene(view.excalidrawAPI!.getSceneElements());
   if (isRelationship(item)) return [item.el.startBinding?.elementId, item.el.endBinding?.elementId].some((e) => endOfLevel(scene, current, e));
   const id = scene.modelId(item.el);
@@ -182,7 +201,10 @@ function levelName(scene: Scene, layer: DiagramId): string {
   return v ? (v.view === "container" ? "Container" : "Component") : "System";
 }
 
-/** The C4 element or relationship drawn at a point of the layer on the canvas, the topmost one. */
+/**
+ * The C4 element, relationship or group drawn at a point of the layer on the canvas, the topmost one. A group is at its
+ * outline and its label, not inside, where what is in it is.
+ */
 export function itemAt(view: ExcalidrawView, p: Vec): El | undefined {
   const els = view.excalidrawAPI!.getSceneElements();
   const byId = new Map(els.map((e) => [e.id, e]));
@@ -194,6 +216,10 @@ export function itemAt(view: ExcalidrawView, p: Vec): El | undefined {
     const owner = ownerOf(byId, e);
     if (!owner) continue;
     if (elementData(owner.customData) && inside(e)) return owner;
+    if (groupData(owner.customData)) {
+      if (e !== owner ? inside(e) : outline(e).some(([a, b]) => distanceToSegment(p, a, b) <= reach)) return owner;
+      continue;
+    }
     if (!relationshipData(owner.customData)) continue;
     if (e.containerId) {
       if (inside(e)) return owner; // the relationship's label
@@ -203,6 +229,12 @@ export function itemAt(view: ExcalidrawView, p: Vec): El | undefined {
     }
   }
   return undefined;
+}
+
+/** The four sides of a box. */
+function outline(b: Box): [Vec, Vec][] {
+  const c = [{ x: b.x, y: b.y }, { x: b.x + b.width, y: b.y }, { x: b.x + b.width, y: b.y + b.height }, { x: b.x, y: b.y + b.height }];
+  return c.map((v, i) => [v, c[(i + 1) % 4]]);
 }
 
 function distanceToSegment(p: Vec, a: Vec, b: Vec): number {
@@ -415,11 +447,13 @@ export function addElement(view: ExcalidrawView, element: C4Element): boolean {
     const data: C4Element = { ...element, id: newId(), parent: parentFor(element.kind, v, v ? scene.parent(v.scope) : undefined) };
     if (!data.parent) delete data.parent;
     if (!canBeExternal(data.kind)) data.external = scene.inheritedExternal(data.parent);
-    const added = addBox(ea, ltx, data, placeIn(view, scene, layer, data), layer);
+    const place = placeIn(view, scene, layer, data);
+    const added = addBox(ea, ltx, data, place.at, layer);
     id = added.id;
     // Beside the boxes already there, not on top of one: further right, the way the next one in a row goes.
     const free = freeSpot(added, scene.boxes(layer));
     if (free.x !== added.x || free.y !== added.y) moveBox(ltx, id, free.x - added.x, free.y - added.y);
+    if (place.group) setMembers(ltx, layer, new Map([[data.id!, place.group.data.group]]));
     const box = ltx.get(id)!;
     fitBoundary(ltx, layer, [box.id]);
     // Every level above, up to its own: the system context for people and systems, the layer of its parent for the
@@ -467,20 +501,29 @@ export function canAdd(view: ExcalidrawView, kind: C4Element["kind"]): boolean {
 }
 
 /**
- * Top left corner of a new box in the layer: below the selected box, else in the system context the middle of the view,
- * and in a layer of a system or container the next free place inside or outside its boundary.
+ * Top left corner of a new box in the layer, and the group it goes in: below the selected box, in its group; in the
+ * selected group, below what is in it; else in the system context the middle of the view, and in a layer of a system
+ * or container the next free place inside or outside its boundary. Into a box's or group's place only on the side of
+ * the boundary the element belongs on.
  */
-function placeIn(view: ExcalidrawView, scene: Scene, layer: DiagramId, data: C4Element): Vec {
+function placeIn(view: ExcalidrawView, scene: Scene, layer: DiagramId, data: C4Element): { at: Vec; group?: Group } {
   const v = scene.view(layer);
   const inScope = !!v && data.parent === v.scope;
+  const groups = new LayerGroups(scene, layer);
+  const item = selectedItem(view);
+  const g = item && isGroup(item) ? groups.ofRect(item.el.id) : undefined;
+  const rect = scene.boundary(layer).rect;
+  if (g && (!v || !rect || contains(rect, center(g.rect)) === inScope)) {
+    return { at: nextSlot(groups.leafBoxes(g), g.rect, GAP, GROUP_PAD), group: g };
+  }
   const selected = selectedElements(view).filter((s) => scene.diagramOf(s.el) === layer);
   if (selected.length === 1 && (!v || (scene.element(scene.modelId(selected[0].el)!)?.parent === v.scope) === inScope)) {
     const b = selected[0].el;
-    return { x: b.x + b.width / 2 - ELEMENT_WIDTH / 2, y: b.y + b.height + GAP };
+    return { at: { x: b.x + b.width / 2 - ELEMENT_WIDTH / 2, y: b.y + b.height + GAP }, group: groups.groupOf(scene.modelId(b)!) };
   }
-  if (v) return slotIn(scene, layer, data);
+  if (v) return { at: slotIn(scene, layer, data) };
   const vp = viewport(view.excalidrawAPI!.getAppState());
-  return { x: vp.x + vp.width / 2 - ELEMENT_WIDTH / 2, y: vp.y + vp.height / 2 - MIN_HEIGHT / 2 };
+  return { at: { x: vp.x + vp.width / 2 - ELEMENT_WIDTH / 2, y: vp.y + vp.height / 2 - MIN_HEIGHT / 2 } };
 }
 
 /** The next free place for an element in a layer: inside the boundary for the scope's elements, else beside it. */
@@ -510,7 +553,9 @@ function fitBoundary(ltx: LayerTx, layer: DiagramId, placed: string[] = []) {
   const inner = scene.boxes(layer).filter(
     (b) => scene.element(scene.modelId(b)!)?.parent === v.scope && (placed.includes(b.id) || contains(rect, center(b))),
   );
-  const fitted = fittedBoundary(rect, inner, label);
+  // With the groups of those elements, and room for their labels.
+  const held = new LayerGroups(scene, layer).around(new Set(inner.map((b) => b.id)));
+  const fitted = fittedBoundary(rect, [...inner, ...held], label);
   const same = (["x", "y", "width", "height"] as const).every((k) => Math.abs(fitted[k] - rect[k]) < 0.5);
   if (!same) ltx.patch(rect.id, fitted);
   const labelAt = label && { x: fitted.x + BOUNDARY_PAD / 2, y: fitted.y + fitted.height - label.height - BOUNDARY_PAD / 4 };
@@ -585,6 +630,35 @@ function restyle(ea: ExcalidrawAutomate, ltx: LayerTx, boxId: string, data: C4El
   ltx.patch(box.id, { ...boxStyle(data), strokeWidth: STROKE_WIDTH, strokeStyle: "solid", customData: { ...(box.customData ?? {}), [KEY]: data } });
   reshape(ea, ltx, box.id, data);
   for (const b of box.boundElements ?? []) if (b.type === "arrow") reroute(ltx, b.id);
+}
+
+/**
+ * Draws boxes resized by hand again at their new size, which Excalidraw scales their text and the parts of their shape
+ * with: the text and the name in their own font sizes, centered, the parts drawn for the new size, and the
+ * relationships straightened. A box stays at least as large as its text needs. False when there was nothing to draw.
+ */
+export function redrawResized(view: ExcalidrawView, boxIds: string[]): boolean {
+  if (!boxIds.length) return false;
+  return withLayers(view, (ea, ltx) => {
+    for (const id of boxIds) {
+      const box = ltx.get(id);
+      const data = box && elementData(box.customData);
+      if (!box || !data) continue;
+      const text = boundText(ltx, box);
+      if (text) {
+        const label = elementLabel(data);
+        const m = measure(ea, { ...text, fontSize: FONT_SIZE }, label);
+        const room = textRoom(withName(ea, text, m, data), shapeOf(data));
+        const size = { width: Math.max(box.width, room.width), height: Math.max(box.height, room.height) };
+        ltx.patch(box.id, size);
+        ltx.patch(text.id, {
+          ...textOf(label), ...m, fontSize: FONT_SIZE, x: box.x + (size.width - m.width) / 2, y: box.y + (size.height - m.height) / 2,
+        });
+      }
+      reshape(ea, ltx, box.id, data);
+      for (const b of box.boundElements ?? []) if (b.type === "arrow") reroute(ltx, b.id);
+    }
+  });
 }
 
 /** Makes everything inside an element external or internal with it, in every layer. */
@@ -761,7 +835,7 @@ export function addRelationship(view: ExcalidrawView, from: El, to: El, data: C4
 
 /** Puts the layer of the selected system or container on the canvas, creating it first if there is none. */
 export function zoomIn(view: ExcalidrawView, item = selectedItem(view)): boolean {
-  if (!item || isRelationship(item)) return false;
+  if (!item || !isElement(item)) return false;
   const kind = zoomView(item.data);
   if (!kind) return false;
   return withLayers(view, (ea, ltx) => {
@@ -1058,10 +1132,13 @@ function reparent(ea: ExcalidrawAutomate, ltx: LayerTx, id: string, parent: stri
   for (const l of layers) fitBoundary(ltx, l, l === home ? placed : []);
 }
 
-/** Takes a box out of its layer, with its text, the parts of its shape and its relationships. */
+/** Takes a box out of its layer, with its text, the parts of its shape and its relationships, and out of its group there. */
 function removeBox(ltx: LayerTx, boxId: string) {
   const box = ltx.get(boxId);
   if (!box) return;
+  const scene = ltx.scene();
+  const id = scene.modelId(box);
+  if (id) setMembers(ltx, scene.diagramOf(box), new Map([[id, undefined]]));
   for (const p of ltx.partsOf(boxId)) ltx.remove(p.id);
   for (const ref of box.boundElements ?? []) {
     if (ref.type === "arrow") removeArrow(ltx, ref.id);
@@ -1096,5 +1173,217 @@ export function deleteBelow(view: ExcalidrawView, gone: [string, string][]): boo
   if (!arrows.length) return false;
   return withLayers(view, (_ea, ltx) => {
     for (const a of arrows) removeArrow(ltx, a.id);
+  });
+}
+
+/** Keeps a group's data on its box. */
+function setGroup(ltx: LayerTx, rectId: string, data: C4Group) {
+  const rect = ltx.get(rectId);
+  if (!rect) return;
+  if (!data.parent) delete data.parent;
+  ltx.patch(rectId, { customData: { ...(rect.customData ?? {}), [KEY]: data } });
+}
+
+/**
+ * Puts elements of a layer right into the groups given, by their ids, and out of any other group there; an element
+ * given no group goes out of every group.
+ */
+function setMembers(ltx: LayerTx, layer: DiagramId, to: ReadonlyMap<string, string | undefined>) {
+  if (!to.size) return;
+  for (const g of new LayerGroups(ltx.scene(), layer).all) {
+    const members = g.data.members.filter((m) => !to.has(m) || to.get(m) === g.data.group);
+    for (const [id, group] of to) if (group === g.data.group && !members.includes(id)) members.push(id);
+    if (members.length !== g.data.members.length || members.some((m, i) => m !== g.data.members[i])) setGroup(ltx, g.rect.id, { ...g.data, members });
+  }
+}
+
+/** The text of a group's label: its name. */
+const groupLabel = (data: Pick<C4Group, "name">) => data.name.trim() || "Unnamed group";
+
+/** Adds the dotted box of a group with its label at the bottom left, grouped so they are selected and moved together. */
+function addGroupBox(ea: ExcalidrawAutomate, ltx: LayerTx, b: Box, data: C4Group, layer: DiagramId, behind?: string): El {
+  const s = ltx.api.getAppState();
+  ea.clear();
+  Object.assign(ea.style, {
+    strokeColor: GROUP_COLOR,
+    backgroundColor: "transparent",
+    fillStyle: "solid",
+    strokeWidth: LINE_WIDTH,
+    strokeStyle: "dotted",
+    roughness: s.currentItemRoughness,
+    roundness: null,
+    opacity: 100,
+    angle: 0,
+    fontFamily: s.currentItemFontFamily,
+    fontSize: FONT_SIZE,
+    textAlign: "left",
+    verticalAlign: "top",
+  });
+  const rectId = ea.addRect(b.x, b.y, b.width, b.height);
+  const text = ea.getElement(ea.addText(b.x, b.y, groupLabel(data), { textAlign: "left" }));
+  const own = newId();
+  const size = { ...b, width: Math.max(b.width, text.width + GROUP_PAD) };
+  const rect: El = { ...ea.getElement(rectId), ...size, groupIds: [own], customData: { [KEY]: data } };
+  const label: El = { ...text, ...groupLabelAt(size, text), groupIds: [own], customData: { [KEY]: { part: rectId } } };
+  if (behind) ltx.addBehind(rect, behind);
+  else ltx.add(rect, layer);
+  ltx.addInFront(label, rectId);
+  return rect;
+}
+
+/**
+ * Adds a group to the layer on the canvas around the selected elements and groups, and selects it. It is nested in the
+ * group they are all right in, when they are all in the same one; with nothing selected, it is empty, in the middle of
+ * the view.
+ */
+export function addGroup(view: ExcalidrawView, name: string): boolean {
+  let rectId = "";
+  const done = withLayers(view, (ea, ltx) => {
+    const scene = ltx.scene();
+    const layer = ltx.current;
+    const groups = new LayerGroups(scene, layer);
+    const picked = selectedC4(view);
+    const pickedGroups = picked.map((el) => groups.ofRect(el.id)).filter((g): g is Group => !!g);
+    // The outermost of the selected groups go in it with what is in them; the selected boxes in those stay there.
+    const children = pickedGroups.filter((g) => !groups.ancestors(g).some((a) => pickedGroups.includes(a)));
+    const inChildren = new Set(children.flatMap((g) => groups.leafBoxes(g).map((b) => b.id)));
+    const boxes = picked.filter((el) => elementData(el.customData) && !inChildren.has(el.id));
+    const members = boxes.map((b) => scene.modelId(b)!);
+    const outer = new Set([...members.map((m) => groups.groupOf(m)), ...children.map((g) => groups.parent(g))]);
+    const parent = outer.size === 1 ? [...outer][0] : undefined;
+    const id = newId();
+
+    const fitted = groups.fitted();
+    const vp = viewport(ltx.api.getAppState());
+    const width = ELEMENT_WIDTH + 2 * GROUP_PAD;
+    const height = MIN_HEIGHT + 2 * GROUP_PAD + GROUP_LABEL;
+    const empty = { x: vp.x + vp.width / 2 - width / 2, y: vp.y + vp.height / 2 - height / 2, width, height };
+    const b = fittedGroup(empty, [...boxes.map((x) => groups.extent(x)), ...children.map((g) => fitted.get(g.rect.id)!)]);
+    // Behind what goes in it.
+    const inside = new Set([...boxes.flatMap((x) => [x.id, ...scene.parts(x.id).map((p) => p.id)]), ...children.map((g) => g.rect.id)]);
+    const behind = scene.elementsIn(layer).find((e) => inside.has(e.id))?.id;
+
+    setMembers(ltx, layer, new Map(members.map((m) => [m, id])));
+    for (const g of children) {
+      const data = groupData(ltx.get(g.rect.id)?.customData);
+      if (data) setGroup(ltx, g.rect.id, { ...data, parent: id });
+    }
+    const data: C4Group = { group: id, name, members, ...(parent ? { parent: parent.data.group } : {}) };
+    rectId = addGroupBox(ea, ltx, b, data, layer, behind).id;
+    // The boundary makes room for the group and its label, keeping its own label clear of them.
+    fitBoundary(ltx, layer);
+  });
+  if (done) {
+    const api = view.excalidrawAPI!;
+    api.updateScene({ appState: selectionOf(api.getSceneElements(), [rectId]), captureUpdate: "NEVER" });
+  }
+  return done;
+}
+
+/** Renames a group. */
+export function updateGroup(view: ExcalidrawView, rectId: string, name: string): boolean {
+  return withLayers(view, (ea, ltx) => {
+    const data = groupData(ltx.get(rectId)?.customData);
+    if (!data) return;
+    setGroup(ltx, rectId, { ...data, name });
+    const label = ltx.partsOf(rectId).find((p) => p.type === "text");
+    if (!label) return;
+    const text = groupLabel({ name });
+    ltx.patch(label.id, { ...textOf(text), ...measure(ea, label, text) });
+    fitBoundary(ltx, ltx.current);
+  });
+}
+
+/**
+ * Keeps the groups of the layer on the canvas with what was dragged, given by the ids of the boxes dragged and how
+ * far: a group takes what is in it along, and a box or group dropped goes right into the innermost group it is dropped
+ * in, by its center, or out of every group. False when nothing changed.
+ */
+export function regroup(view: ExcalidrawView, moved: { id: string; dx: number; dy: number }[]): boolean {
+  const { scene, current } = readScene(view.excalidrawAPI!.getSceneElements());
+  const groups = new LayerGroups(scene, current);
+  if (!groups.all.length) return false;
+  const dragged = new Map(moved.map((m) => [m.id, m]));
+  const draggedGroups = groups.all.filter((g) => dragged.has(g.rect.id));
+  const cameAlong = (g: Group | undefined) => !!g && [g, ...groups.ancestors(g)].some((x) => dragged.has(x.rect.id));
+
+  // What is in a dragged group comes along, unless it was dragged too.
+  const carry = new Map<string, Vec>();
+  for (const g of draggedGroups) {
+    const d = dragged.get(g.rect.id)!;
+    for (const b of groups.leafBoxes(g)) if (!dragged.has(b.id) && !carry.has(b.id)) carry.set(b.id, { x: d.dx, y: d.dy });
+  }
+  // Where what was dropped goes, unless its group came along with it.
+  const members = new Map<string, string | undefined>();
+  for (const m of moved) {
+    const box = scene.byId.get(m.id);
+    const id = box && scene.modelId(box);
+    if (!box || !id || scene.diagramOf(box) !== current) continue;
+    const own = groups.groupOf(id);
+    if (cameAlong(own)) continue;
+    const target = groups.dropTarget(box);
+    if (target !== own) members.set(id, target?.data.group);
+  }
+  const parents = new Map<Group, string | undefined>();
+  for (const g of draggedGroups) {
+    const own = groups.parent(g);
+    if (cameAlong(own)) continue;
+    const target = groups.dropTarget(g.rect, new Set(groups.within(g)));
+    if (target !== own) parents.set(g, target?.data.group);
+  }
+  if (!carry.size && !members.size && !parents.size) return false;
+  return withLayers(view, (_ea, ltx) => {
+    for (const [boxId, d] of carry) moveBox(ltx, boxId, d.x, d.y);
+    setMembers(ltx, current, members);
+    for (const [g, parent] of parents) {
+      const data = groupData(ltx.get(g.rect.id)?.customData);
+      if (data) setGroup(ltx, g.rect.id, { ...data, parent });
+    }
+    fitBoundary(ltx, current);
+  });
+}
+
+/**
+ * Hands what was in deleted groups, given by the ids of their boxes, to the groups they were in: their elements and
+ * the groups nested in them go right into the nearest group around them that is still there. One undo step after the
+ * delete. False when there was nothing to hand on.
+ */
+export function dissolveGroups(view: ExcalidrawView, rectIds: string[]): boolean {
+  const api = view.excalidrawAPI!;
+  const deleted = new Map<string, C4Group>();
+  for (const e of api.getSceneElementsIncludingDeleted()) {
+    const d = e.isDeleted && rectIds.includes(e.id) ? groupData(e.customData) : null;
+    if (d) deleted.set(d.group, d);
+  }
+  const { scene, current } = readScene(api.getSceneElements());
+  const groups = new LayerGroups(scene, current);
+  // The nearest group around a deleted one that is still there.
+  const heir = (d: C4Group): string | undefined => {
+    const seen = new Set<string>();
+    let p = d.parent;
+    while (p && !groups.get(p)) {
+      const up = deleted.get(p);
+      if (!up || seen.has(p)) return undefined;
+      seen.add(p);
+      p = up.parent;
+    }
+    return p;
+  };
+  const members = new Map<string, string>();
+  const parents = new Map<Group, string>();
+  for (const d of deleted.values()) {
+    const to = heir(d);
+    if (!to) continue;
+    for (const m of d.members) if (scene.boxIn(m, current) && !groups.groupOf(m)) members.set(m, to);
+    for (const g of groups.all) if (g.data.parent === d.group) parents.set(g, to);
+  }
+  if (!members.size && !parents.size) return false;
+  return withLayers(view, (_ea, ltx) => {
+    setMembers(ltx, current, members);
+    for (const [g, parent] of parents) {
+      const data = groupData(ltx.get(g.rect.id)?.customData);
+      if (data) setGroup(ltx, g.rect.id, { ...data, parent });
+    }
+    fitBoundary(ltx, current);
   });
 }

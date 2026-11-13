@@ -3,6 +3,7 @@ import { C4Kind, KINDS, kindTitle } from "./model";
 
 export interface PanelActions {
   add: (kind: C4Kind) => void;
+  group: () => void; // around the selected elements
   relate: () => void;
   edit: () => void;
   reverse: () => void;
@@ -32,7 +33,7 @@ export const isPanelPosition = (p: unknown): p is PanelPosition => typeof p === 
 
 const ICONS: Record<C4Kind, string> = { person: "user", system: "box", container: "container", component: "component" };
 
-type Key = C4Kind | "relate" | "edit" | "reverse" | "zoomIn" | "zoomOut" | "theme" | "pause";
+type Key = C4Kind | "group" | "relate" | "edit" | "reverse" | "zoomIn" | "zoomOut" | "theme" | "pause";
 
 const PAUSE = "Pause C4 editing (use Excalidraw's own shortcuts)";
 const RESUME = "Resume C4 editing";
@@ -64,6 +65,7 @@ export class C4Panel {
     };
     const add = group();
     for (const kind of KINDS) button(add, kind, ICONS[kind], `Add ${kindTitle(kind).toLowerCase()}`, () => a.add(kind));
+    button(add, "group", "group", "Add group around the selected elements", a.group);
     const change = group();
     button(change, "relate", "spline", "Add relationship between the two selected elements", a.relate);
     button(change, "edit", "pencil", "Edit selected element or relationship", a.edit);
@@ -105,6 +107,7 @@ export class C4Panel {
       return;
     }
     this.buttons.get("theme")!.disabled = false;
+    this.buttons.get("group")!.disabled = false;
     pause.disabled = false;
     this.buttons.get("relate")!.disabled = !s.pair;
     this.buttons.get("edit")!.disabled = !s.item;

@@ -70,6 +70,24 @@ export interface C4Boundary {
   boundary: string; // id of the system or container
 }
 
+/**
+ * A group of elements in one layer, drawn as a dotted box around them with its name at the bottom left, as the
+ * containers of a microservice: no C4 element, only a way of showing what belongs together. It is kept on its box;
+ * its label is a part of the box.
+ */
+export interface C4Group {
+  group: string; // id of the group
+  name: string;
+  parent?: string; // id of the group it is nested in
+  members: string[]; // ids of the elements in it, not in the groups nested in it
+}
+
+export function groupData(customData: Record<string, unknown> | undefined): C4Group | null {
+  const d = customData?.[KEY] as Partial<C4Group> | undefined;
+  if (typeof d?.group !== "string" || typeof d.name !== "string") return null;
+  return { ...(d as C4Group), members: Array.isArray(d.members) ? d.members.filter((m): m is string => typeof m === "string") : [] };
+}
+
 /** Metadata from the rows of a form: keys trimmed, rows without a key left out, the last of the same key kept. */
 export function cleanMetadata(rows: readonly (readonly [string, string])[]): Record<string, string> | undefined {
   const out: Record<string, string> = {};
@@ -578,6 +596,25 @@ export const MIN_HEIGHT = 150;
 export const PADDING = 16;
 export const BOUNDARY_PAD = 40; // between a boundary and the elements in it
 export const BOUNDARY_LABEL = 56; // room for a boundary's label below the elements in it
+export const GROUP_PAD = 24; // between a group and the elements in it
+export const GROUP_LABEL = 32; // room for a group's label below the elements in it
+
+/**
+ * A group fitted to what is in it: around it with room for its label at the bottom, at least as wide as the label.
+ * With nothing in it, it stays as it is.
+ */
+export function fittedGroup(current: Box, inner: Box[], label?: { width: number }): Box {
+  const around = bounds(inner, GROUP_PAD);
+  if (!around) return { x: current.x, y: current.y, width: current.width, height: current.height };
+  const width = Math.max(around.width, (label?.width ?? 0) + GROUP_PAD);
+  return { x: around.x, y: around.y, width, height: around.height + GROUP_LABEL };
+}
+
+/** Where a group's label goes: at its bottom left corner, as a boundary's. */
+export const groupLabelAt = (group: Box, label: { height: number }): Vec => ({
+  x: group.x + GROUP_PAD / 2,
+  y: group.y + group.height - label.height - GROUP_PAD / 3,
+});
 
 /**
  * A boundary fitted to the elements in it: around them with room for its label at the bottom, never smaller than one
@@ -599,9 +636,15 @@ export function fittedBoundary(current: Box, inner: Box[], label?: { width: numb
  * Size of an element's box around its text: C4 boxes look alike, so at least a fixed size. With room for its shape,
  * which the text is centered in.
  */
-export const boxSize = (text: { width: number; height: number }, shape: Shape = "rounded") => ({
-  width: Math.max(ELEMENT_WIDTH, text.width + 2 * PADDING),
-  height: Math.max(MIN_HEIGHT, text.height + 2 * PADDING + 2 * shapeRoom(shape)),
+export const boxSize = (text: { width: number; height: number }, shape: Shape = "rounded") => {
+  const room = textRoom(text, shape);
+  return { width: Math.max(ELEMENT_WIDTH, room.width), height: Math.max(MIN_HEIGHT, room.height) };
+};
+
+/** The least size of an element's box: room for its text and its shape, as for a box resized by hand. */
+export const textRoom = (text: { width: number; height: number }, shape: Shape = "rounded") => ({
+  width: text.width + 2 * PADDING,
+  height: text.height + 2 * PADDING + 2 * shapeRoom(shape),
 });
 
 /** Middle of an arrow, where its label goes: halfway along a straight arrow, else its middle point. */

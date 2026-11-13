@@ -1,5 +1,6 @@
 import { AppState, El, ExcalidrawAutomate, ExcalidrawView, SceneTx } from "./excalidraw";
 import { ghostsFor } from "./ghosts";
+import { LayerGroups } from "./groups";
 import { DiagramId, Scene, endsOf, guarded, markPatches } from "./layers";
 import { C4Store, CONTEXT, KEY, ViewKind, bounds, elementData, isGhost, partOf, relationshipData, storeData } from "./model";
 
@@ -149,8 +150,8 @@ export function guardLevels(view: ExcalidrawView, last: Guard | undefined): { gu
 
 /**
  * Brings what the canvas shows about its elements up to date after they changed, as after a drag: the marks of the
- * boxes that are where they do not belong, and the ghosts of the levels above, whose boundaries fit around what is
- * drawn. Left out of the undo history: undo takes the elements back, and this follows them again.
+ * boxes that are where they do not belong, the groups fitted to what is in them, and the ghosts of the levels above,
+ * whose boundaries fit around what is drawn. Left out of the undo history: undo takes the elements back, and this follows them again.
  */
 export function refreshCanvas(view: ExcalidrawView) {
   const api = view.excalidrawAPI;
@@ -158,6 +159,7 @@ export function refreshCanvas(view: ExcalidrawView) {
   const { scene, current } = readScene(api.getSceneElements());
   const tx = new SceneTx(view);
   for (const [id, p] of markPatches(scene, current)) tx.patch(id, p);
+  for (const [id, p] of new LayerGroups(scene, current).patches()) tx.patch(id, p);
   syncGhosts(tx, scene, current);
   tx.commit("NEVER");
 }
@@ -334,10 +336,16 @@ export class LayerTx {
     return el;
   }
 
-  /** Marks the boxes of every layer that are where they do not belong, and unmarks the others. */
+  /**
+   * Marks the boxes of every layer that are where they do not belong, and unmarks the others; fits every group to what
+   * is in it.
+   */
   private mark() {
     const scene = this.scene();
-    for (const layer of Object.keys(this.store.views)) for (const [id, p] of markPatches(scene, layer)) this.patch(id, p);
+    for (const layer of Object.keys(this.store.views)) {
+      for (const [id, p] of markPatches(scene, layer)) this.patch(id, p);
+      for (const [id, p] of new LayerGroups(scene, layer).patches()) this.patch(id, p);
+    }
   }
 
   /** Applies the change to the canvas and the store. */

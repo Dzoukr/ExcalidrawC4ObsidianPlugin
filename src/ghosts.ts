@@ -5,6 +5,7 @@ import type { El } from "./excalidraw";
 import { BOUNDARY_LABEL, BOUNDARY_PAD, CONTEXT, KEY, boundaryData, bounds, center, isGhost, laneLine, laneOffsets, makeWay, normalOf, relationshipData } from "./model.ts";
 import type { Box, Vec } from "./model.ts";
 import type { DiagramId, Scene } from "./layers.ts";
+import { isGroupElement } from "./groups.ts";
 
 const PREFIX = "c4g-";
 const OPACITY = 0.35;
@@ -189,9 +190,10 @@ export function ghostsFor(scene: Scene, current: DiagramId): El[] {
       });
     }
 
-    // Everything else drawn on this level, out of the way like the boxes.
+    // Everything else drawn on this level, out of the way like the boxes. Groups are shown only on their own level.
     for (const e of scene.elementsIn(up)) {
       if (handled.has(e.id) || e.containerId || isGhost(e.customData) || boundaryData(e.customData) || relationshipData(e.customData)) continue;
+      if (isGroupElement(scene.byId, e)) continue;
       if (!e.type || e.opacity === 0) continue;
       out.push(...moved(scene, e, way.move(e)));
     }

@@ -11,6 +11,7 @@ Draw [C4 model](https://c4model.com) diagrams in Excalidraw drawings in Obsidian
 | Container | type, name, technology, description | shaped by its type |
 | Component | name, technology, description | box with the two small boxes of the UML component symbol on its left side |
 | Relationship | description, technology | dashed grey arrow, label in the middle |
+| Group | name | dotted grey box around its elements, name at the bottom left |
 
 Box text follows the C4 convention: name, `[Kind: technology]`, blank line, description.
 
@@ -19,6 +20,8 @@ Box text follows the C4 convention: name, `[Kind: technology]`, blank line, desc
 The shapes follow the key of the diagrams on c4model.com, in the Classic theme white with the outline and text in one color: blue, grey for external elements (see Colors and themes). Only containers have a `type`, chosen in their form from a row of buttons with a picture of each shape (arrow keys move along it), which gives their shape: **generic** a rounded box (also without a type), **server-side app** a rounded box with a `>_` prompt in its top left corner, **single-page app** a browser window, **database** a cylinder, **storage** a bucket, **directory** a folder. A person has a head in front of the top of a body rounder than Excalidraw rounds a rectangle (a quarter of its height at most), so both are parts, a component the two small boxes of the UML symbol. Every kind and type has the same colors for now.
 
 The box carrying the data and the text stays a rectangle, as Excalidraw only puts text in a rectangle, ellipse or diamond, and relationships are glued to it. Where it is no rectangle shape it is invisible, and the shape is drawn by **parts** behind it (`customData.c4.part`: the id of the box), grouped with the box and its text so they are selected, moved and deleted together. The plugin draws the parts again whenever it changes the box, moves them with it, ghosts them with it, guards them with it, and on its next change to the drawing redraws boxes drawn before their shape or look was what it is now: the parts keep the version of the shapes (`customData.c4.shape`).
+
+A box resized by hand keeps its new size, at least as large as its text needs: Excalidraw scales the text and the parts with it, so once the resize is done its text and name go back to their font sizes, centered, and its parts are drawn again for the new size (one undo step after the resize). A group's label goes back to its font size the same way, and the group is fitted to what is in it again.
 
 The name of an element is larger than the rest of its box's text, as in the C4 model's diagrams. Excalidraw draws a text in one size, so the name is a text of its own, also a part, over room the box's text keeps for it at the top: lines holding only a zero-width space, which nothing trims away.
 
@@ -58,6 +61,17 @@ Whom a drawing belongs to, for this plugin:
 - The kind of a drawing with C4 elements and none is written once its first element is drawn, or when one drawn before kinds is open; only while the drawing has no unsaved changes.
 - Silent means: no keys, double-clicks, selection outline, redrawing in new colors, guard or marks. Commands from the palette are not offered on another plugin's drawing.
 - The mind map plugin follows the same conventions. It has to be released with them before or with this plugin, or it would still act in C4 drawings.
+
+### Groups
+
+A **group** shows elements of one layer that belong together, as the containers of a microservice on [c4model.com](https://c4model.com/abstractions/microservices): a dotted grey box around them with its name at its bottom left. It is no C4 element: it has no relationships, is not zoomed into, and is shown **only in the layer it is drawn in**, never among the ghosts of the levels above. Any layer can have groups, around anything drawn in it, and groups can be nested in one another.
+
+- Its data is on its box (`customData.c4`: `{ group, name, parent?, members }`): `members` are the ids of the elements right in it, `parent` the id of the group it is nested in. Its label is a part of the box (`part`), grouped with it in Excalidraw so that the two are selected, moved and deleted together.
+- **Add group** (panel, command, **Ctrl+G** instead of Excalidraw's own grouping) puts a group around the selected elements and groups, nested in the group they are all right in when that is one; with nothing selected, an empty one in the middle of the view. Selected boxes in a selected group stay in it.
+- A group **fits what is in it**, its elements with the parts of their shapes and the groups nested in it, with room for its label, whenever the drawing changes, left out of the undo history as the marks of misplaced boxes are. An empty group keeps its size. A layer's boundary holds the groups of the elements in it.
+- **Dragging**: a box or group dropped goes right into the innermost group under its center, or out of every group; a group dragged takes what is in it along when dropped (a group resized is fitted again instead). One undo step after the drag.
+- A new element goes into the group of the selected box it is added below, or into the selected group, below what is in it, when it belongs on that side of the boundary.
+- Editing a group (form, Space, Enter, double-click on its outline or label) renames it. Deleting it leaves its elements and the groups nested in it, which go into the group it was in, if any (one undo step after the delete). An element the plugin takes out of a layer leaves its group there; one deleted by hand stays a member until it is back, for undo.
 
 ## Done (0.1.0)
 

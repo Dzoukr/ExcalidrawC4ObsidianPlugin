@@ -1,14 +1,14 @@
 // Keyboard shortcuts of a drawing, as the user sets them in the plugin's settings.
 // Pure: no Obsidian or Excalidraw runtime.
 
-export const SHORTCUT_ACTIONS = ["add", "zoomIn", "zoomOut", "edit", "up", "down", "left", "right"] as const;
+export const SHORTCUT_ACTIONS = ["add", "group", "zoomIn", "zoomOut", "edit", "up", "down", "left", "right"] as const;
 export type ShortcutAction = (typeof SHORTCUT_ACTIONS)[number];
 
 /** A shortcut for each action, as "Ctrl+Shift+K"; an empty one is turned off. */
 export type Shortcuts = Record<ShortcutAction, string>;
 
 export const DEFAULT_SHORTCUTS: Shortcuts = {
-  add: "Insert", zoomIn: "Enter", zoomOut: "Backspace", edit: "Space", up: "ArrowUp", down: "ArrowDown", left: "ArrowLeft", right: "ArrowRight",
+  add: "Insert", group: "Ctrl+G", zoomIn: "Enter", zoomOut: "Backspace", edit: "Space", up: "ArrowUp", down: "ArrowDown", left: "ArrowLeft", right: "ArrowRight",
 };
 
 /** The actions that go from element to element; with Shift added to their key they add to the selection. */
@@ -20,6 +20,10 @@ export const SHORTCUT_NAMES: Record<ShortcutAction, { name: string; desc: string
   add: {
     name: "Add element",
     desc: "Adds an element of the level on the canvas; with two elements selected, a relationship between them.",
+  },
+  group: {
+    name: "Add group",
+    desc: "Around the selected elements and groups, instead of Excalidraw's own grouping; with nothing selected, an empty one.",
   },
   zoomIn: { name: "Zoom in", desc: "Into the selected system or container." },
   zoomOut: { name: "Zoom out", desc: "To the level above. Its key never deletes a C4 element; Delete does." },

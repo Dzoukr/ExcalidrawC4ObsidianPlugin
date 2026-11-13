@@ -3,13 +3,14 @@ import {
   normalizePath, setIcon,
 } from "obsidian";
 import {
-  Selected, SelectedRelationship, addElement, addRelationship, canAdd, canEdit, canRelate, deleteBelow, diagramInfo, dropBoxes, hasKind, isRelationship, itemAt, itemOf, reverseRelationship,
-  onlyC4Selected, refreshLooks, setDrawingTheme, themeOfDrawing, useDrawingColors, selectNext, selectedElements, selectedItem, selectionShapes, updateElement, updateRelationship, zoomIn, zoomOut,
+  Selected, SelectedGroup, SelectedItem, SelectedRelationship, addElement, addGroup, addRelationship, canAdd, canEdit, canRelate, deleteBelow, diagramInfo, dissolveGroups, dropBoxes, hasKind, isElement,
+  isGroup, isRelationship, itemAt, itemOf, redrawResized, regroup, reverseRelationship, onlyC4Selected, refreshLooks, setDrawingTheme, themeOfDrawing, useDrawingColors, selectNext, selectedElements,
+  selectedItem, selectionShapes, updateElement, updateGroup, updateRelationship, zoomIn, zoomOut,
 } from "./actions";
 import { Guard, guardLevels, protectStore, refreshCanvas, selectionOf } from "./layertx";
 import { AppState, El, ExcalidrawAPI, ExcalidrawView, VIEW_TYPE_EXCALIDRAW, isExcalidrawView } from "./excalidraw";
 import {
-  C4Element, C4Kind, CONTAINER_TYPES, CONTAINER_TYPE_TITLES, ContainerType, Ink, KINDS, Shape, Vec, boundaryData, bounds, canBeExternal, cleanMetadata, elementData, hasTechnology,
+  Box, C4Element, C4Kind, CONTAINER_TYPES, CONTAINER_TYPE_TITLES, ContainerType, Ink, KINDS, Shape, boundaryData, bounds, canBeExternal, cleanMetadata, elementData, groupData, hasTechnology,
   isContainerType, kindTitle, levelOf, shapeDrawing, shapeOf, zoomView, LOOK_KEYS, LOOK_KEY_TITLES, LOOK_PARTS, LOOK_PART_TITLES, Look, LookKey,
   lookOf, ownLook, KEY,
 } from "./model";
@@ -63,9 +64,10 @@ interface ViewState {
   highlightRaf: number;
   selection: unknown; // the selection the panel shows, to refresh it only when the selection changes
   viewMode: boolean | undefined;
-  drag?: Map<string, Vec>; // where the C4 boxes were when the pointer went down on the drawing, until it goes up
+  drag?: Map<string, Box>; // where the C4 boxes and groups were when the pointer went down on the drawing, until it goes up
   revision: number; // of the elements last checked for misplaced boxes
   guard?: Guard; // the elements of the levels above, put back when deleted
+  groups?: Set<string>; // the boxes of the groups on the canvas at the last look, to tell which were deleted since
   claimed?: boolean; // taken over for C4, until the frontmatter says so
   plain?: boolean; // kept plain Excalidraw, until the frontmatter says so
   keyWritten?: boolean; // the drawing's kind was written to its frontmatter
@@ -126,6 +128,11 @@ export default class ExcalidrawC4Plugin extends Plugin {
         });
       }
     }
+    this.addCommand({
+      id: "add-group",
+      name: "Add group around the selected elements",
+      checkCallback: (checking) => this.withView(checking, (view) => this.promptGroup(view)),
+    });
     this.addCommand({
       id: "add-relationship",
       name: "Add relationship between the two selected elements",
@@ -315,6 +322,11 @@ export default class ExcalidrawC4Plugin extends Plugin {
         if (!selectedItem(view)) return false;
         this.promptEdit(view);
         return true;
+      case "group":
+        // Instead of Excalidraw's own grouping, unless something else than C4 elements and relationships is selected.
+        if (!onlyC4Selected(view)) return false;
+        this.promptGroup(view);
+        return true;
     }
   }
 
@@ -351,7 +363,7 @@ export default class ExcalidrawC4Plugin extends Plugin {
     api.updateScene({ appState: selectionOf(api.getSceneElements(), [item.el.id]), captureUpdate: "NEVER" });
     // A system or container opens, as Enter does; anything else opens its form. The selection reaches the app state
     // only later, so the item goes along.
-    if (!isRelationship(item) && zoomView(item.data)) this.zoomIn(view, item);
+    if (isElement(item) && zoomView(item.data)) this.zoomIn(view, item);
     else this.promptEdit(view, item);
   }
 
@@ -359,7 +371,7 @@ export default class ExcalidrawC4Plugin extends Plugin {
     if (!(e.target instanceof Node)) return;
     for (const s of this.states.values()) {
       if (!s.view.contentEl.contains(e.target)) continue;
-      s.drag = new Map(boxesOf(s.api.getSceneElements()).map((b) => [b.id, { x: b.x, y: b.y }]));
+      s.drag = new Map(draggables(s.api.getSceneElements()).map((b) => [b.id, { x: b.x, y: b.y, width: b.width, height: b.height }]));
     }
   }
 
@@ -373,13 +385,25 @@ export default class ExcalidrawC4Plugin extends Plugin {
     }
   }
 
-  private afterDrag(s: ViewState, before: Map<string, Vec>) {
+  private afterDrag(s: ViewState, before: Map<string, Box>) {
     if (!this.states.has(s.view) || s.api.getAppState().viewModeEnabled) return;
-    const moved = boxesOf(s.api.getSceneElements()).filter((b) => {
+    const off = (a: number, c: number) => Math.abs(a - c) > 0.5;
+    const els = draggables(s.api.getSceneElements());
+    const resized = (b: El) => {
       const was = before.get(b.id);
-      return was && (Math.abs(was.x - b.x) > 0.5 || Math.abs(was.y - b.y) > 0.5);
+      return !!was && (off(was.width, b.width) || off(was.height, b.height));
+    };
+    const moved = els.flatMap((b) => {
+      const was = before.get(b.id);
+      // A group resized rather than moved takes nothing along: it is fitted to what is in it again.
+      const fitted = !!groupData(b.customData) && resized(b);
+      return was && !fitted && (off(was.x, b.x) || off(was.y, b.y)) ? [{ id: b.id, dx: b.x - was.x, dy: b.y - was.y }] : [];
     });
+    // Groups first: a group dragged takes what is in it along, and what is dropped into a group goes in it.
+    if (moved.length) regroup(s.view, moved);
     const messages = moved.length ? dropBoxes(s.view, moved.map((b) => b.id)) : [];
+    // Boxes resized keep their new size, with their text and shape drawn again for it.
+    redrawResized(s.view, els.filter((b) => elementData(b.customData) && resized(b)).map((b) => b.id));
     for (const message of messages) new Notice(message);
     if (messages.length) this.refreshPanel(s);
     this.checkCanvas(s);
@@ -401,6 +425,11 @@ export default class ExcalidrawC4Plugin extends Plugin {
     s.guard = guard;
     // A relationship deleted here is deleted from the levels below too.
     if (deleted.length && deleteBelow(s.view, deleted)) new Notice("Deleted the relationship from the levels below too.");
+    // What was in a group deleted since goes into the group it was in.
+    const all = s.api.getSceneElementsIncludingDeleted();
+    const gone = [...(s.groups ?? [])].filter((id) => all.find((e) => e.id === id)?.isDeleted);
+    if (gone.length) dissolveGroups(s.view, gone);
+    s.groups = new Set(s.api.getSceneElements().filter((e) => !e.isDeleted && groupData(e.customData)).map((e) => e.id));
     if (restored.length) {
       const one = restored.length === 1;
       new Notice(`${restored.join(", ")} ${one ? "belongs" : "belong"} to a level above: zoom out to delete ${one ? "it" : "them"}.`);
@@ -493,6 +522,7 @@ export default class ExcalidrawC4Plugin extends Plugin {
     if (existing) this.detach(existing);
     const panel = new C4Panel({
       add: (kind) => this.promptElement(view, kind, false),
+      group: () => this.promptGroup(view),
       relate: () => this.promptRelationship(view),
       edit: () => this.promptEdit(view),
       reverse: () => this.reverse(view),
@@ -607,6 +637,7 @@ export default class ExcalidrawC4Plugin extends Plugin {
 
   private promptEdit(view: ExcalidrawView, item = selectedItem(view)) {
     if (!item) return;
+    if (isGroup(item)) return this.promptEditGroup(view, item);
     if (!canEdit(view, item)) {
       // Shown here for context, from a level above.
       const what = isRelationship(item) ? "This relationship" : item.data.name.trim() || "This element";
@@ -616,6 +647,24 @@ export default class ExcalidrawC4Plugin extends Plugin {
     }
     if (isRelationship(item)) this.promptEditRelationship(view, item);
     else this.promptEditElement(view, item);
+  }
+
+  /**
+   * The form adding a group around the selected elements and groups of the layer on the canvas, or an empty one with
+   * nothing selected.
+   */
+  private promptGroup(view: ExcalidrawView) {
+    const fields: Field[] = [{ key: "name", name: "Name", placeholder: "E.g. Customer service" }];
+    new FormModal(this.app, "Add group", fields, (v) => {
+      if (!addGroup(view, v.name ?? "")) new Notice(NO_EXCALIDRAW);
+    }).open();
+  }
+
+  private promptEditGroup(view: ExcalidrawView, { el, data }: SelectedGroup) {
+    const fields: Field[] = [{ key: "name", name: "Name", value: data.name, placeholder: "E.g. Customer service" }];
+    new FormModal(this.app, "Edit group", fields, (v) => {
+      if (!updateGroup(view, el.id, v.name ?? "")) new Notice(NO_EXCALIDRAW);
+    }, "Save").open();
   }
 
   /** Lets the user pick the drawing's theme. */
@@ -928,11 +977,11 @@ const metadataEditor = (rows: [string, string][], submit: () => void) => (el: HT
 /** The form's button that turns a relationship the other way round; the form's title shows which way it goes. */
 const reverseButton = (flip: () => void): HeaderButton => ({ icon: "arrow-left-right", label: "Reverse direction", onClick: flip });
 
-/** The C4 boxes among the elements. */
 /** Whether a drawing has anything of C4 in it: elements, their layers or ghosts. */
 const hasC4 = (els: readonly El[]): boolean => els.some((e) => !e.isDeleted && !!e.customData?.[KEY]);
 
-const boxesOf = (els: readonly El[]): El[] => els.filter((e) => !e.containerId && !e.isDeleted && elementData(e.customData));
+/** What can be dragged and dropped in a drawing: the C4 boxes and the boxes of groups. */
+const draggables = (els: readonly El[]): El[] => els.filter((e) => !e.containerId && !e.isDeleted && (elementData(e.customData) || groupData(e.customData)));
 
 /** Changes whenever an element changes. */
 function revisionOf(els: readonly El[]): number {
@@ -947,8 +996,8 @@ function selectedRelationship(view: ExcalidrawView): SelectedRelationship | null
   return item && isRelationship(item) ? item : null;
 }
 
-/** The one selected element or relationship, when it can be edited in the layer on the canvas. */
-function editableItem(view: ExcalidrawView): Selected | SelectedRelationship | null {
+/** The one selected element, relationship or group, when it can be edited in the layer on the canvas. */
+function editableItem(view: ExcalidrawView): SelectedItem | null {
   const item = selectedItem(view);
   return item && canEdit(view, item) ? item : null;
 }

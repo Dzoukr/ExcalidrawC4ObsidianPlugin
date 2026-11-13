@@ -11,6 +11,7 @@ A drawing is one C4 model, drawn level by level. Start with the system context (
 Open an Excalidraw drawing and run one of the commands, or use the panel:
 
 - **Add person / software system / container / component**, internal or external. Each level takes only its own kinds.
+- **Add group around the selected elements**, also with Ctrl+G: a dotted box showing what belongs together, such as the containers of a microservice. Groups nest, fit what is in them, and are shown only on their own level. Drag an element into or out of a group to change it; dragging a group takes what is in it along.
 - **Add relationship between the two selected elements.** It goes from the element selected first to the other one, and also appears one level up, between the elements containing its ends. Two elements can have several relationships; they lie side by side.
 - **Reverse direction of selected relationship.**
 - **Edit selected element or relationship**, also with Enter or a double-click. An element drawn on several levels changes on all of them.
