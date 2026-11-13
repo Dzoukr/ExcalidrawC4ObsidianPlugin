@@ -5,7 +5,7 @@ import { join } from "path";
 
 const prod = process.argv[2] === "production";
 // Dev builds are copied into the test vault so Obsidian picks them up.
-const testPluginDir = join("test-vault", ".obsidian", "plugins", "excalidraw-c4");
+const testPluginDir = join("test-vault", ".obsidian", "plugins", "excalidraw-c-four-model");
 
 const copyToTestVault = {
   name: "copy-to-test-vault",
