@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Scene, copiesOf, endsOf, grid, guarded, levelsUpTo, relationshipsWithin, markPatches, misplaced, nextSlot, row, unrelated } from "../src/layers.ts";
+import { Scene, boxBindings, copiesOf, endsOf, relationshipsBelow, grid, guarded, levelsUpTo, relationshipsWithin, markPatches, misplaced, nextSlot, row, unrelated } from "../src/layers.ts";
 import { BOUNDARY_LABEL, BOUNDARY_PAD, CONTEXT, ELEMENT_WIDTH, KEY, MIN_HEIGHT, MISPLACED_LOOK, STROKE_WIDTH, allowedKinds, canBeExternal, lookOf, parentKind, fittedBoundary, isGhost, makeWay, overlaps, parentFor, pushOut, storeData, wayBack, zoomView } from "../src/model.ts";
 import { fade, ghostId, ghostTextId, ghostsFor } from "../src/ghosts.ts";
 import type { C4Element, ViewKind } from "../src/model.ts";
@@ -86,6 +86,8 @@ test("a relationship drawn in a container layer goes up to the system context, u
   assert.deepEqual(scene.liftTargets("w", "m", "s"), []); // shop → mail exists too
   const fresh = sceneOf({ [CONTEXT]: context.filter((e) => e.id !== "a2"), s: shop });
   assert.deepEqual(fresh.liftTargets("w", "m", "s").map((t) => [t.diagram, t.from.id, t.to.id]), [[CONTEXT, "shop", "mail"]]);
+  assert.deepEqual(scene.liftTargets("w", "u", "s"), [], "the other way round, user → shop stands for it too");
+  assert.deepEqual(scene.liftTargets("m", "p", "s"), [], "as shop → mail does for mail → API");
 });
 
 test("a relationship inside one element does not go up to it", () => {
@@ -189,7 +191,7 @@ test("the levels above show around the layer, making way for it, without repeati
   assert.equal(g("a1"), undefined); // to the opened element
   const a2 = g("a2")!;
   assert.ok(a2.y < -300 && a2.x >= 0); // from the user in the layer to the moved mail
-  assert.ok(ghosts.every((e) => e.locked && isGhost(e.customData) && !e.startBinding));
+  assert.ok(ghosts.every((e) => !e.locked && isGhost(e.customData) && !e.startBinding), "selectable, to connect a relationship to");
   assert.deepEqual(ghostsFor(scene, CONTEXT), []);
 });
 
@@ -351,6 +353,8 @@ test("a layer guards what comes from the levels above against deleting, not its 
     arrow("own", "user", "ctl"), // with an end on the level
     arrow("uses", "ctl", "web"), // which ties the sibling container to the layer
     arrow("carried", "user", "pb"), // to the boundary
+    arrow("orphan", "user", "gone"), // its end on the level deleted
+    { ...arrow("loose", "user", "web"), endBinding: undefined }, // unbound from it
   ];
   const scene = sceneOf({ [CONTEXT]: context, s: shop, p: layer });
   assert.deepEqual([...guarded(scene, "p")].sort(), ["pb", "up", "user", "web", "wt"]);
@@ -394,7 +398,7 @@ test("a relationship stands for the ones below between the same elements or anyt
   assert.deepEqual(relationshipsWithin(scene, "u", "w", "s"), []); // not up a level
 });
 
-test("a relationship's copies are the same relationship up or down a level, saying the same", () => {
+test("a relationship's copies are the same relationship down a level, saying the same", () => {
   const says = (a: El, description: string): El => ({ ...a, customData: { [KEY]: { relationship: true, description } } });
   const tag = { [KEY]: { boundary: "s" } };
   const scene = sceneOf({
@@ -409,7 +413,8 @@ test("a relationship's copies are the same relationship up or down a level, sayi
     ],
   });
   assert.deepEqual(copiesOf(scene, scene.byId.get("a1")!).map((a) => a.id).sort(), ["a3", "carried"]);
-  assert.deepEqual(copiesOf(scene, scene.byId.get("a3")!).map((a) => a.id), ["a1"]); // up a level, not in its own layer
+  assert.deepEqual(copiesOf(scene, scene.byId.get("a3")!), []); // not up a level: the level above sums up what is below
+  assert.deepEqual(copiesOf(scene, scene.byId.get("carried")!), []); // nor in its own layer
   assert.deepEqual(copiesOf(scene, scene.byId.get("a4")!), []);
 });
 
@@ -419,4 +424,37 @@ test("ghosts are dimmed by mixing their colors with white, so their fills still 
   assert.equal(fade("#000", 0.5), "#808080");
   assert.equal(fade("transparent", 0.35), "transparent");
   assert.equal(fade("rgba(0,0,0,1)", 0.35), null);
+});
+
+test("a relationship dropped onto the name or shape of a box is glued to the box", () => {
+  const part = (id: string, of: string): El => ({ ...base, id, type: "text", customData: { [KEY]: { part: of } }, boundElements: [{ type: "arrow", id: "r" }] });
+  const els: El[] = [
+    box("user", { kind: "person", id: "u" }),
+    { ...box("web", { kind: "container", id: "w", parent: "s" }), boundElements: [{ type: "text", id: "wt" }] },
+    part("name", "web"),
+    { ...arrow("r", "user", "name"), endBinding: { elementId: "name", fixedPoint: [0.5, 1] } as never },
+    arrow("ok", "user", "web"),
+  ];
+  const patches = new Map(boxBindings(els));
+  assert.deepEqual(patches.get("r"), { endBinding: { elementId: "web", fixedPoint: [0.5, 1] } });
+  assert.deepEqual(patches.get("name"), { boundElements: [] });
+  assert.deepEqual(patches.get("web"), { boundElements: [{ type: "text", id: "wt" }, { type: "arrow", id: "r" }] });
+  assert.equal(patches.size, 3, "arrows glued to boxes stay as they are");
+  const scene = sceneOf({ [CONTEXT]: els.map((e) => ({ ...e, ...patches.get(e.id) })) });
+  assert.deepEqual(endsOf(scene, scene.byId.get("r")!), ["u", "w"]);
+});
+
+test("a relationship deleted takes the ones below between the same elements with it, either way", () => {
+  const tag = { [KEY]: { boundary: "s" } };
+  const below = [
+    { ...base, id: "sb", type: "rectangle", customData: tag },
+    ...shop, // a3: user → web
+    arrow("back", "web", "user2"), // web → user, added by hand
+    arrow("carried", "user2", "sb"), // user → the shop's boundary
+    arrow("inside", "web", "api"), // between two elements inside the shop
+  ];
+  const scene = sceneOf({ [CONTEXT]: context.filter((e) => e.id !== "a1"), s: below }); // a1: user → shop, deleted
+  assert.deepEqual(relationshipsBelow(scene, CONTEXT, [["u", "s"]]).map((a) => a.id).sort(), ["a3", "back", "carried"]);
+  const still = sceneOf({ [CONTEXT]: [...context.filter((e) => e.id !== "a1"), arrow("a5", "shop", "user")], s: below });
+  assert.deepEqual(relationshipsBelow(still, CONTEXT, [["u", "s"]]), [], "not while shop → user stands for them");
 });

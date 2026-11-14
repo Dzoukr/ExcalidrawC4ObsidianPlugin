@@ -2,7 +2,7 @@ import { AppState, El, ExcalidrawAutomate, ExcalidrawView, getEA } from "./excal
 import { ghostSource } from "./ghosts";
 import { Group, LayerGroups, labelSize } from "./groups";
 import type { Shape } from "./highlight";
-import { DiagramId, Scene, copiesOf, endOfLevel, endsOf, grid, levelsUpTo, newId, nextSlot, ofLevel, relationshipsWithin, row, unrelated } from "./layers";
+import { DiagramId, Scene, copiesOf, endOfLevel, endsOf, grid, levelsUpTo, newId, nextSlot, ofLevel, relationshipsBelow, row, unrelated } from "./layers";
 import { LayerTx, readScene, readStore, selectionOf } from "./layertx";
 import { Theme, colorsOf, themeOfNewDrawings } from "./themes";
 import {
@@ -188,10 +188,47 @@ export function canEdit(view: ExcalidrawView, item: SelectedItem): boolean {
   return !!id && ofLevel(scene, current, id);
 }
 
-/** Whether two elements can be connected in the layer on the canvas: one of them belongs to its level. */
+/**
+ * Whether two elements can be connected in the layer on the canvas, as drawn there or as ghosts of a level above: any
+ * two, unless one is inside the other.
+ */
 export function canRelate(view: ExcalidrawView, a: Selected, b: Selected): boolean {
-  const { scene, current } = readScene(view.excalidrawAPI!.getSceneElements());
-  return [a.el.id, b.el.id].some((e) => endOfLevel(scene, current, e));
+  const { scene } = readScene(view.excalidrawAPI!.getSceneElements());
+  const [x, y] = [endId(scene, a.el), endId(scene, b.el)];
+  return !!x && !!y && !scene.within(x, y) && !scene.within(y, x);
+}
+
+/** Whether a ghost of a level above is drawn at a point of the canvas. */
+export function ghostAt(view: ExcalidrawView, p: Vec): boolean {
+  return view.excalidrawAPI!.getSceneElements().some((e) =>
+    isGhost(e.customData) && !e.containerId && e.type !== "arrow" && p.x >= e.x && p.x <= e.x + e.width && p.y >= e.y && p.y <= e.y + e.height);
+}
+
+/** The element a box stands for, or the ghost of one of a level above. */
+function endId(scene: Scene, el: El): string | null {
+  const source = isGhost(el.customData) ? ghostSource(el.id) : null;
+  const box = source ? scene.byId.get(source) : el;
+  return box ? scene.modelId(box) : null;
+}
+
+/**
+ * The selected elements a relationship can go between, in the order they were selected: C4 elements, and the ghosts
+ * of elements of the levels above, standing for those elements.
+ */
+export function selectedEnds(view: ExcalidrawView): Selected[] {
+  const api = view.excalidrawAPI;
+  if (!api) return [];
+  const els = api.getSceneElements();
+  const byId = new Map(els.map((e) => [e.id, e]));
+  const { scene } = readScene(els);
+  const out = new Map<string, Selected>();
+  for (const [id, on] of Object.entries(api.getAppState().selectedElementIds ?? {})) {
+    const el = on ? ownerOf(byId, byId.get(id)) : undefined;
+    const end = el && endId(scene, el);
+    const data = end && scene.element(end);
+    if (el && end && data && !out.has(el.id)) out.set(el.id, { el, data: { ...data, id: end } });
+  }
+  return [...out.values()];
 }
 
 /** The C4 level a layer is on. */
@@ -835,17 +872,26 @@ function addArrow(ea: ExcalidrawAutomate, ltx: LayerTx, from: El, to: El, data: 
 
 /**
  * Adds a relationship from one element to another, and the same relationship to every other layer showing its ends or
- * the elements containing them, where there is none yet.
+ * the elements containing them, where there is none between them yet, either way. An end that is a ghost of a level
+ * above is drawn in the layer first, where its ghost is, as an element around the boundary.
  */
 export function addRelationship(view: ExcalidrawView, from: El, to: El, data: C4Relationship): boolean {
   return withLayers(view, (ea, ltx) => {
-    const scene = ltx.scene();
     const layer = ltx.current;
-    addArrow(ea, ltx, from, to, data, layer);
-    const a = scene.modelId(from);
-    const b = scene.modelId(to);
+    const drawn = (end: El): El | undefined => {
+      if (!isGhost(end.customData)) return ltx.get(end.id);
+      const scene = ltx.scene();
+      const id = endId(scene, end);
+      const element = id && scene.element(id);
+      if (!id || !element) return undefined;
+      return scene.boxIn(id, layer) ?? addBox(ea, ltx, { ...element, id }, { x: end.x, y: end.y }, layer);
+    };
+    const a = drawn(from);
+    const b = drawn(to);
     if (!a || !b) return;
-    for (const t of scene.liftTargets(a, b, layer)) addArrow(ea, ltx, t.from, t.to, data, t.diagram);
+    addArrow(ea, ltx, a, b, data, layer);
+    const scene = ltx.scene();
+    for (const t of scene.liftTargets(scene.modelId(a)!, scene.modelId(b)!, layer)) addArrow(ea, ltx, t.from, t.to, data, t.diagram);
   });
 }
 
@@ -1179,15 +1225,12 @@ function removeArrow(ltx: LayerTx, arrowId: string) {
 }
 
 /**
- * Deletes, in the other layers, the relationships that relationships deleted from the layer on the canvas stood for:
- * between the same two elements, or anything inside them. Not while the layer still has another relationship between
- * the two the same way. One undo step, after the delete itself. False when there was nothing to delete.
+ * Deletes, in the other layers, the relationships that relationships deleted from the layer on the canvas stood for;
+ * see relationshipsBelow. One undo step, after the delete itself. False when there was nothing to delete.
  */
 export function deleteBelow(view: ExcalidrawView, gone: [string, string][]): boolean {
   const { scene, current } = readScene(view.excalidrawAPI!.getSceneElements());
-  const arrows = gone
-    .filter(([from, to]) => !scene.hasRelationship(current, from, to))
-    .flatMap(([from, to]) => relationshipsWithin(scene, from, to, current));
+  const arrows = relationshipsBelow(scene, current, gone);
   if (!arrows.length) return false;
   return withLayers(view, (_ea, ltx) => {
     for (const a of arrows) removeArrow(ltx, a.id);

@@ -166,7 +166,8 @@ export class Scene {
 
   /**
    * Where else a relationship between two elements should be drawn: every other diagram that shows its ends or the
-   * elements containing them, as two different boxes, and has no such relationship yet.
+   * elements containing them, as two different boxes, and has no relationship between them yet, either way: a level
+   * above sums up what is below, so one relationship there may stand for a conversation both ways below.
    */
   liftTargets(from: string, to: string, except: DiagramId): { diagram: DiagramId; from: El; to: El }[] {
     const out: { diagram: DiagramId; from: El; to: El }[] = [];
@@ -177,7 +178,7 @@ export class Scene {
       if (!a || !b) continue;
       const ma = this.modelId(a)!;
       const mb = this.modelId(b)!;
-      if (ma !== mb && !this.hasRelationship(diagram, ma, mb)) out.push({ diagram, from: a, to: b });
+      if (ma !== mb && !this.hasRelationship(diagram, ma, mb) && !this.hasRelationship(diagram, mb, ma)) out.push({ diagram, from: a, to: b });
     }
     return out;
   }
@@ -284,10 +285,14 @@ export function endsOf(scene: Scene, arrow: El): [string, string] | null {
   return from && to ? [from, to] : null;
 }
 
+/** How far down a layer is: the system context 0, the layer of a system 1, of a container 2. */
+export const depthOf = (scene: Scene, layer: DiagramId): number => (layer === CONTEXT ? 0 : scene.ancestors(layer).length + 1);
+
 /**
- * The copies of a relationship in the other layers: the same relationship between the elements standing for its ends
- * there, up a level or down, with the same description, technology and metadata, as copied from it and not edited
- * since. One between the same elements that says something else is another relationship.
+ * The copies of a relationship on the levels below: the same relationship between the elements standing for its ends
+ * there, with the same description, technology and metadata, as copied from it and not edited since. One between the
+ * same elements that says something else is another relationship. The levels above, and other layers of its own level,
+ * sum up what is below them, so they keep what they say.
  */
 export function copiesOf(scene: Scene, arrow: El): El[] {
   const ends = endsOf(scene, arrow);
@@ -297,10 +302,10 @@ export function copiesOf(scene: Scene, arrow: El): El[] {
   const same = (d: C4Relationship) =>
     d.description.trim() === data.description.trim() && (d.technology ?? "").trim() === (data.technology ?? "").trim() &&
     JSON.stringify(d.metadata ?? {}) === JSON.stringify(data.metadata ?? {});
-  const layer = scene.diagramOf(arrow);
+  const depth = depthOf(scene, scene.diagramOf(arrow));
   return [...scene.byId.values()].filter((x) => {
     const d = x.containerId ? null : relationshipData(x.customData);
-    const e = d && x.id !== arrow.id && scene.diagramOf(x) !== layer ? endsOf(scene, x) : null;
+    const e = d && x.id !== arrow.id && depthOf(scene, scene.diagramOf(x)) > depth ? endsOf(scene, x) : null;
     if (!d || !e || !same(d)) return false;
     const [xa, xb] = e;
     return (scene.within(a, xa) && scene.within(b, xb)) || (scene.within(xa, a) && scene.within(xb, b));
@@ -317,6 +322,20 @@ export function relationshipsWithin(scene: Scene, from: string, to: string, exce
     const ends = endsOf(scene, a);
     return !!ends && scene.within(ends[0], from) && scene.within(ends[1], to);
   });
+}
+
+/**
+ * The relationships of the other layers that relationships deleted from a layer, given by the elements they went
+ * between, stood for: between the same two elements or anything inside them, either way, as a relationship stands for
+ * the ones below between them both ways. Not while the layer still has a relationship between the two, either way.
+ */
+export function relationshipsBelow(scene: Scene, layer: DiagramId, gone: [string, string][]): El[] {
+  const out = new Map<string, El>();
+  for (const [a, b] of gone) {
+    if (scene.hasRelationship(layer, a, b) || scene.hasRelationship(layer, b, a)) continue;
+    for (const r of [...relationshipsWithin(scene, a, b, layer), ...relationshipsWithin(scene, b, a, layer)]) out.set(r.id, r);
+  }
+  return [...out.values()];
 }
 
 /**
@@ -361,7 +380,9 @@ export function guarded(scene: Scene, layer: DiagramId): Set<string> {
     else if (elementData(e.customData)) {
       if (!ofLevel(scene, layer, scene.modelId(e)!) && !stale.has(e.id)) withText(e);
     } else if (relationshipData(e.customData)) {
-      if (![e.startBinding?.elementId, e.endBinding?.elementId].some((end) => endOfLevel(scene, layer, end))) withText(e);
+      // Only between two elements still there: one whose end on the level was deleted is the layer's to delete.
+      const ends = [e.startBinding?.elementId, e.endBinding?.elementId];
+      if (ends.every((end) => !!end && scene.byId.has(end)) && !ends.some((end) => endOfLevel(scene, layer, end))) withText(e);
     }
   }
   return out;
@@ -416,3 +437,29 @@ export function row(n: number, centerX: number, y: number, width: number, gap: n
 
 /** A fresh element id. */
 export const newId = () => Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
+
+/**
+ * The changes that glue relationship arrows glued to the name or a part of the shape of a box, as Excalidraw lets an
+ * arrow be dropped onto them, to the box itself: the box stands for the element, its name and parts do not.
+ */
+export function boxBindings(els: readonly El[]): [string, Partial<El>][] {
+  const byId = new Map(els.filter((e) => !e.isDeleted).map((e) => [e.id, e]));
+  const out = new Map<string, Partial<El>>();
+  const now = <K extends keyof El>(id: string, k: K): El[K] => (out.get(id)?.[k] ?? byId.get(id)?.[k]) as El[K];
+  const set = (id: string, p: Partial<El>) => out.set(id, { ...out.get(id), ...p });
+  for (const arrow of byId.values()) {
+    if (!relationshipData(arrow.customData)) continue;
+    for (const key of ["startBinding", "endBinding"] as const) {
+      const binding = arrow[key];
+      const part = binding ? byId.get(binding.elementId) : undefined;
+      const boxId = part ? partOf(part.customData) : null;
+      const box = boxId ? byId.get(boxId) : undefined;
+      if (!binding || !part || !box || !elementData(box.customData)) continue;
+      set(arrow.id, { [key]: { ...binding, elementId: box.id } });
+      set(part.id, { boundElements: (now(part.id, "boundElements") ?? []).filter((b) => b.id !== arrow.id) });
+      const bound = now(box.id, "boundElements") ?? [];
+      if (!bound.some((b) => b.id === arrow.id)) set(box.id, { boundElements: [...bound, { type: "arrow", id: arrow.id }] });
+    }
+  }
+  return [...out];
+}

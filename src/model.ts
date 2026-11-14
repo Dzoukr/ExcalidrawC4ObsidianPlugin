@@ -132,7 +132,7 @@ export function relationshipData(customData: Record<string, unknown> | undefined
   return d?.relationship === true && typeof d.description === "string" ? (d as C4Relationship) : null;
 }
 
-/** A dimmed, locked copy of an element of a level above, shown around the layer on the canvas. */
+/** A dimmed copy of an element of a level above, shown around the layer on the canvas. */
 export const isGhost = (customData: Record<string, unknown> | undefined): boolean =>
   (customData?.[KEY] as { ghost?: unknown } | undefined)?.ghost === true;
 

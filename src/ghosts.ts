@@ -1,4 +1,5 @@
-// The levels above the layer on the canvas, shown around it as dimmed, locked copies so the whole picture stays in view.
+// The levels above the layer on the canvas, shown around it as dimmed copies so the whole picture stays in view. They
+// can be selected, to connect a relationship to; moved or deleted, they are put back.
 // Pure: works on plain element data, no Obsidian or Excalidraw runtime.
 
 import type { El } from "./excalidraw";
@@ -54,12 +55,12 @@ function dim(e: El): Partial<El> {
   return { strokeColor, backgroundColor };
 }
 
-/** A ghost of an element: the same look, dimmed and locked, unbound, and no C4 element any more. */
+/** A ghost of an element: the same look, dimmed, unbound, and no C4 element any more. */
 function ghost(e: El, p: Partial<El>): El {
   const g: El & { index?: unknown } = {
     ...e,
     id: idOf(e),
-    locked: true,
+    locked: false,
     ...dim(e),
     customData: { [KEY]: { ghost: true } },
     groupIds: (e.groupIds ?? []).map(ghostId),

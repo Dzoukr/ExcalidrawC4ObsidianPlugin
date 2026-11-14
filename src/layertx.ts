@@ -1,7 +1,7 @@
 import { AppState, El, ExcalidrawAutomate, ExcalidrawView, SceneTx } from "./excalidraw";
 import { ghostsFor } from "./ghosts";
 import { LayerGroups } from "./groups";
-import { DiagramId, Scene, endsOf, guarded, markPatches } from "./layers";
+import { DiagramId, Scene, boxBindings, endsOf, guarded, markPatches } from "./layers";
 import { C4Store, CONTEXT, KEY, ViewKind, bounds, elementData, isGhost, partOf, relationshipData, storeData } from "./model";
 
 const randomNonce = () => Math.floor(Math.random() * 2 ** 31);
@@ -149,8 +149,8 @@ export function guardLevels(view: ExcalidrawView, last: Guard | undefined): { gu
 }
 
 /**
- * Brings what the canvas shows about its elements up to date after they changed, as after a drag: the marks of the
- * boxes that are where they do not belong, the groups fitted to what is in them, and the ghosts of the levels above,
+ * Brings what the canvas shows about its elements up to date after they changed, as after a drag: relationships
+ * dropped onto the name or shape of a box glued to the box, the marks of the boxes that are where they do not belong, the groups fitted to what is in them, and the ghosts of the levels above,
  * whose boundaries fit around what is drawn. Left out of the undo history: undo takes the elements back, and this follows them again.
  */
 export function refreshCanvas(view: ExcalidrawView) {
@@ -158,6 +158,7 @@ export function refreshCanvas(view: ExcalidrawView) {
   if (!api) return;
   const { scene, current } = readScene(api.getSceneElements());
   const tx = new SceneTx(view);
+  for (const [id, p] of boxBindings(api.getSceneElements())) tx.patch(id, p);
   for (const [id, p] of markPatches(scene, current)) tx.patch(id, p);
   for (const [id, p] of new LayerGroups(scene, current).patches()) tx.patch(id, p);
   syncGhosts(tx, scene, current);
@@ -171,9 +172,10 @@ function syncGhosts(tx: SceneTx, scene: Scene, current: DiagramId) {
   if (!fresh.length && !old.length) return;
   const keep = new Set(fresh.map((g) => g.id));
   for (const o of old) if (!keep.has(o.id)) tx.delete(o.id);
-  // With the links between a box and its text, which a ghost saved by the Obsidian plugin may have lost.
+  // With the links between a box and its text, which a ghost saved by the Obsidian plugin may have lost, and whether
+  // it is locked, as ghosts once were.
   const shape = (e: El) => JSON.stringify([
-    e.x, e.y, e.width, e.height, e.points, e.text, e.opacity, e.strokeColor, e.backgroundColor, e.containerId ?? null, e.boundElements?.map((b) => b.id) ?? null,
+    e.x, e.y, e.width, e.height, e.points, e.text, e.opacity, e.strokeColor, e.backgroundColor, e.containerId ?? null, e.boundElements?.map((b) => b.id) ?? null, !!e.locked,
   ]);
   const added: El[] = [];
   for (const g of fresh) {

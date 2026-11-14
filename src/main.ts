@@ -4,7 +4,7 @@ import {
 } from "obsidian";
 import {
   Selected, SelectedGroup, SelectedItem, SelectedRelationship, addElement, addGroup, addRelationship, canAdd, canEdit, canRelate, deleteBelow, diagramInfo, dissolveGroups, dropBoxes, hasKind, isElement,
-  isGroup, isRelationship, itemAt, itemOf, moveBoundary, redrawResized, regroup, restoreBoundary, reverseRelationship, onlyC4Selected, refreshLooks, setDrawingTheme, themeOfDrawing, useDrawingColors, selectNext, selectedElements,
+  isGroup, isRelationship, ghostAt, itemAt, itemOf, moveBoundary, redrawResized, regroup, restoreBoundary, reverseRelationship, onlyC4Selected, refreshLooks, setDrawingTheme, themeOfDrawing, useDrawingColors, selectNext, selectedElements, selectedEnds,
   selectedItem, selectionShapes, updateElement, updateGroup, updateRelationship, zoomIn, zoomOut,
 } from "./actions";
 import { Guard, guardLevels, protectStore, refreshCanvas, selectionOf } from "./layertx";
@@ -338,7 +338,7 @@ export default class ExcalidrawC4Plugin extends Plugin {
    */
   private addByKey(view: ExcalidrawView) {
     const selected = selectedElements(view);
-    if (selected.length === 2) return this.promptRelationship(view);
+    if (selectedEnds(view).length === 2) return this.promptRelationship(view);
     if (selected.length > 2) return void new Notice("Select two elements to add a relationship between them.");
     const kinds = diagramInfo(view).kinds;
     const own = selected[0]?.data.kind;
@@ -358,7 +358,14 @@ export default class ExcalidrawC4Plugin extends Plugin {
     const at = { x: (e.clientX - (s.offsetLeft ?? 0)) / zoom - s.scrollX, y: (e.clientY - (s.offsetTop ?? 0)) / zoom - s.scrollY };
     const el = itemAt(view, at);
     const item = el && itemOf(el);
-    if (!item) return;
+    if (!item) {
+      // A ghost of a level above is not edited here, nor is its text.
+      if (ghostAt(view, at)) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+      }
+      return;
+    }
     e.preventDefault();
     e.stopImmediatePropagation();
     api.updateScene({ appState: selectionOf(api.getSceneElements(), [item.el.id]), captureUpdate: "NEVER" });
@@ -796,10 +803,10 @@ export default class ExcalidrawC4Plugin extends Plugin {
 
   private promptRelationship(view: ExcalidrawView) {
     // The element selected first is where the relationship starts, unless reversed.
-    const [a, b] = selectedElements(view);
+    const [a, b] = selectedEnds(view);
     if (!a || !b) return;
     if (!canRelate(view, a, b)) {
-      new Notice("Both elements belong to a level above: zoom out to connect them.");
+      new Notice("An element has no relationship with what it is in.");
       return;
     }
     let reversed = false;
@@ -1038,7 +1045,7 @@ function editableItem(view: ExcalidrawView): SelectedItem | null {
 
 /** The two selected elements, when they can be connected in the layer on the canvas. */
 function selectedPair(view: ExcalidrawView): [Selected, Selected] | null {
-  const [a, b, ...rest] = selectedElements(view);
+  const [a, b, ...rest] = selectedEnds(view);
   return a && b && !rest.length && canRelate(view, a, b) ? [a, b] : null;
 }
 

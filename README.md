@@ -46,9 +46,9 @@ Every element and relationship can also have **metadata**, key: value pairs adde
 
 ### ➡️ Relationships across levels
 
-A relationship goes from the element selected first to the other one; its form, the edit form and a command can reverse it. Two elements can have any number of relationships, either way; they lie side by side and stay apart when a box moves.
+A relationship goes from the element selected first to the other one, which can also be a dimmed element of a level above: it is drawn in the level then, where it was; its form, the edit form and a command can reverse it. Two elements can have any number of relationships, either way; they lie side by side and stay apart when a box moves.
 
-A relationship drawn on one level also appears on the levels above, between the elements containing its ends: `Customer → Web shop` in the containers of the Bookshop puts `Customer → Bookshop` in the system context. Going down, the relationships of a system come into its level as arrows to its boundary, to be moved onto the containers they are about. Editing a relationship edits its copies on the other levels, and deleting it deletes them.
+A relationship drawn on one level also appears on the levels above, between the elements containing its ends: `Customer → Web shop` in the containers of the Bookshop puts `Customer → Bookshop` in the system context, unless the two already have a relationship there, either way. Going down, the relationships of a system come into its level as arrows to its boundary, to be moved onto the containers they are about. Editing a relationship edits its copies on the levels below; the levels above keep what they say. Deleting the last relationship between two elements deletes every relationship below between them and anything inside them, either way.
 
 ### 🗂️ Groups
 
