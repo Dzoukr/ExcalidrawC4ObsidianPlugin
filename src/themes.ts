@@ -211,10 +211,13 @@ export function uniqueName(name: string, taken: string[]): string {
   for (let i = 2; ; i++) if (!taken.includes(`${name} ${i}`)) return `${name} ${i}`;
 }
 
-/** Colors read from saved settings or an imported theme, over the Classic ones for what is missing or no color. */
+/**
+ * Colors read from saved settings or an imported theme, over the Classic ones for what is missing or no color. A type
+ * of container the theme has no colors for, as one added after it was saved, has those of its generic containers.
+ */
 export function mergeColors(value: unknown): Colors {
   const c = (value && typeof value === "object" ? value : {}) as Partial<Record<LookKey, Partial<Look>>>;
-  return Object.fromEntries(LOOK_KEYS.map((k) => [k, lookFrom(c[k], k)])) as Colors;
+  return Object.fromEntries(LOOK_KEYS.map((k) => [k, lookFrom(c[k] ?? (k.startsWith("container-") ? c["container-generic"] : undefined), k)])) as Colors;
 }
 
 /** A copy of a theme's colors, to start a theme of the user's from. */

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mergeColors } from "../src/themes.ts";
-import { DEFAULT_LOOKS, lookKeyOf, lookSignature, lookSignatureOf, ownLook, useColors, FONT_SIZE, NAME_FONT_SIZE, ROOM_LINE, SHAPE_VERSION, nameRoom, nameText, shapeDrawing, shapeVersionOf, boxStyle, partOf, shapeOf, shapeParts, cleanMetadata, nearestIn, ELEMENT_WIDTH, KEY, MIN_HEIGHT, PADDING, arrowMidpoint, boxSize, edgePoint, laneLine, laneOffsets, normalOf, rayExit, elementData, elementLabel, lookOf, relationshipData, relationshipLabel, wrap } from "../src/model.ts";
+import { DEFAULT_LOOKS, lookKeyOf, lookSignature, lookSignatureOf, ownLook, useColors, FONT_SIZE, NAME_FONT_SIZE, ROOM_LINE, SHAPE_VERSION, nameRoom, nameText, shapeDrawing, shapeVersionOf, boxStyle, partOf, shapeOf, shapeParts, cleanMetadata, nearestIn, nearestFree, overlaps, ELEMENT_WIDTH, KEY, MIN_HEIGHT, PADDING, arrowMidpoint, boxSize, edgePoint, laneLine, laneOffsets, normalOf, rayExit, elementData, elementLabel, lookOf, relationshipData, relationshipLabel, wrap } from "../src/model.ts";
 
 test("wrap breaks at word boundaries and keeps paragraphs", () => {
   assert.deepEqual(wrap("one two three four", 9), ["one two", "three", "four"]);
@@ -112,6 +112,7 @@ test("a container's type gives its shape; without one it is generic, a rounded b
   assert.equal(shapeOf({ kind: "container", type: "function" }), "lambda");
   assert.equal(shapeOf({ kind: "container", type: "job" }), "clock");
   assert.equal(shapeOf({ kind: "container", type: "queue" }), "pipe");
+  assert.equal(shapeOf({ kind: "container", type: "custom" }), "rounded", "a custom container without an icon");
   assert.equal(shapeOf({ kind: "component", type: "database" }), "component");
   assert.equal(shapeOf({ kind: "system", type: "database" }), "rounded");
 });
@@ -218,4 +219,17 @@ test("a group has the colors of groups in the theme, over which it keeps only it
   } finally {
     useColors(DEFAULT_LOOKS);
   }
+});
+
+test("a new box goes to the free place nearest to where it was asked for, not past everything in its row", () => {
+  const w = 240;
+  const h = 150;
+  const gap = 120;
+  // A long row of boxes through the place asked for, and room just below it.
+  const rowOf = Array.from({ length: 8 }, (_, i) => ({ x: i * (w + gap), y: 0, width: w, height: h }));
+  const asked = { x: 2 * (w + gap), y: 0, width: w, height: h };
+  const p = nearestFree(asked, rowOf, gap);
+  assert.ok(Math.hypot(p.x - asked.x, p.y - asked.y) < 2 * (h + gap), "near where it was asked for");
+  assert.ok(rowOf.every((t) => !overlaps({ ...asked, ...p }, t, gap / 2)), "clear of the others");
+  assert.deepEqual(nearestFree(asked, [], gap), { x: asked.x, y: asked.y }, "a free place stays");
 });

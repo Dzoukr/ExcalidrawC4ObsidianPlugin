@@ -9,6 +9,7 @@ export type C4Kind = (typeof KINDS)[number];
 /** What a container is, which gives its box its shape. */
 export const CONTAINER_TYPES = [
   "generic", "server", "web", "mobile", "desktop", "function", "job", "queue", "database", "storage", "directory",
+  "custom",
 ] as const;
 export type ContainerType = (typeof CONTAINER_TYPES)[number];
 
@@ -24,6 +25,7 @@ export const CONTAINER_TYPE_TITLES: Record<ContainerType, string> = {
   database: "Database",
   storage: "Storage",
   directory: "Directory",
+  custom: "Custom",
 };
 
 export const isContainerType = (t: unknown): t is ContainerType => CONTAINER_TYPES.includes(t as ContainerType);
@@ -33,6 +35,7 @@ export interface C4Element {
   kind: C4Kind;
   name: string;
   type?: ContainerType; // containers only; generic when not set or not known
+  icon?: string; // custom containers only: the id of an Obsidian icon drawn in the top left corner of the box
   technology?: string; // containers and components only
   description?: string;
   external?: boolean; // outside the system being described
@@ -344,7 +347,7 @@ export const LINE_WIDTH = 2;
  */
 export type Shape =
   | "rounded" | "person" | "component" | "terminal" | "cylinder" | "bucket" | "folder" | "browser" | "phone" | "monitor" | "lambda" | "clock"
-  | "pipe";
+  | "pipe" | "icon";
 
 const CONTAINER_SHAPES: Record<ContainerType, Shape> = {
   generic: "rounded",
@@ -358,15 +361,20 @@ const CONTAINER_SHAPES: Record<ContainerType, Shape> = {
   function: "lambda",
   job: "clock",
   queue: "pipe",
+  custom: "rounded", // with an icon, "icon"
 };
 
-/** The shape of an element; only containers have a type, which picks theirs. */
-export function shapeOf(e: Pick<C4Element, "kind" | "type">): Shape {
+/** The shape of an element; only containers have a type, which picks theirs, and a custom one may have an icon. */
+export function shapeOf(e: Pick<C4Element, "kind" | "type" | "icon">): Shape {
   if (e.kind === "person") return "person";
   if (e.kind === "component") return "component";
-  if (e.kind === "container") return CONTAINER_SHAPES[isContainerType(e.type) ? e.type : "generic"];
-  return "rounded";
+  if (e.kind !== "container") return "rounded";
+  const type = isContainerType(e.type) ? e.type : "generic";
+  return type === "custom" && e.icon ? "icon" : CONTAINER_SHAPES[type];
 }
+
+/** The icon of an element, which only a custom container has. */
+export const iconOf = (e: Pick<C4Element, "kind" | "type" | "icon">): string | undefined => (shapeOf(e) === "icon" ? e.icon : undefined);
 
 export type Roundness = { type: number; value?: number } | null;
 
@@ -390,7 +398,8 @@ export type Ink = "outline" | "detail" | "body" | "none";
 
 /**
  * A part of a shape drawn behind its box: a rectangle (with rounded corners of a radius, if given) or ellipse in a box,
- * or a line through points, closed and filled when it ends where it starts.
+ * or a line through points, closed and filled when it ends where it starts. A fine part, a line of an icon, is drawn
+ * thinner than the outlines and never sketchy, so that the icon stays clear.
  */
 export interface Part {
   type: "rectangle" | "ellipse" | "line";
@@ -399,15 +408,24 @@ export interface Part {
   round?: number;
   stroke: Ink;
   fill: Ink;
+  fine?: boolean;
 }
 
 export const RIM = 14; // half the height of the top of a cylinder or bucket
 export const BAR = 22; // the bar at the top of a browser window
 export const TAB = 14; // how far the tab of a folder stands up
 export const HEAD = 104; // the head of a person
-export const PROMPT = 28; // room for the prompt in the corner of a terminal, the lambda of a function, the clock of a job
+// Room for the prompt in the corner of a terminal, the lambda of a function, the clock of a job, the icon of a custom container.
+export const PROMPT = 28;
 export const BEZEL = 22; // the frame of a phone lying on its side, left and right of its screen
 export const STAND = 24; // the stand under a monitor
+export const ICON = 22; // the square an icon is drawn in, in the top left corner, as a lambda or a clock
+
+/** A four-pointed star, in a square of side 1: the icon pictured for a custom container, which can have any. */
+export const CUSTOM_PICTURE: Vec[][] = [[
+  { x: 0.5, y: 0.1 }, { x: 0.6, y: 0.4 }, { x: 0.9, y: 0.5 }, { x: 0.6, y: 0.6 }, { x: 0.5, y: 0.9 }, { x: 0.4, y: 0.6 }, { x: 0.1, y: 0.5 },
+  { x: 0.4, y: 0.4 }, { x: 0.5, y: 0.1 },
+]];
 
 /** Points along an ellipse from one angle to another, going clockwise on the screen. */
 function arc(cx: number, cy: number, rx: number, ry: number, from: number, to: number, n = 16): Vec[] {
@@ -437,8 +455,8 @@ function vessel(b: Box, inset: number, bottomRim: number): Part[] {
   ];
 }
 
-/** The parts drawing a shape around a box, back to front. */
-export function shapeParts(shape: Shape, b: Box): Part[] {
+/** The parts drawing a shape around a box, back to front; the icon's strokes, in a square of side 1, for an icon shape. */
+export function shapeParts(shape: Shape, b: Box, icon: Vec[][] = []): Part[] {
   const { x, y, width: w, height: h } = b;
   switch (shape) {
     case "rounded":
@@ -523,6 +541,18 @@ export function shapeParts(shape: Shape, b: Box): Part[] {
         { type: "ellipse", box: { x: x + 10, y: y + 8, width: 19, height: 19 }, stroke: "detail", fill: "none" },
         { type: "line", points: [{ x: x + 19.5, y: y + 11.5 }, { x: x + 19.5, y: y + 17.5 }, { x: x + 24, y: y + 20 }], stroke: "detail", fill: "none" },
       ];
+    case "icon": {
+      // The icon in the top left corner, where a function has its lambda; a stroke of one point is a dot.
+      const at = (p: Vec): Vec => ({ x: x + 8 + p.x * ICON, y: y + 5 + p.y * ICON });
+      return [
+        { type: "rectangle", box: b, round: RADIUS, stroke: "outline", fill: "body" },
+        ...icon.filter((s) => s.length).map((s): Part => {
+          if (s.length > 1) return { type: "line", points: s.map(at), stroke: "detail", fill: "none", fine: true };
+          const c = at(s[0]);
+          return { type: "ellipse", box: { x: c.x - 0.5, y: c.y - 0.5, width: 1, height: 1 }, stroke: "detail", fill: "detail", fine: true };
+        }),
+      ];
+    }
     case "pipe": {
       // A cylinder lying on its side, as a queue is drawn: the outline, and the front of its right end.
       const [left, right, cy] = [x + RIM, x + w - RIM, y + h / 2];
@@ -536,8 +566,8 @@ export function shapeParts(shape: Shape, b: Box): Part[] {
 }
 
 /** Everything a shape is drawn with, the outline of a rounded box included, as for a picture of it. */
-export function shapeDrawing(shape: Shape, b: Box): Part[] {
-  return shape === "rounded" ? [{ type: "rectangle", box: b, round: RADIUS, stroke: "outline", fill: "body" }] : shapeParts(shape, b);
+export function shapeDrawing(shape: Shape, b: Box, icon: Vec[][] = []): Part[] {
+  return shape === "rounded" ? [{ type: "rectangle", box: b, round: RADIUS, stroke: "outline", fill: "body" }] : shapeParts(shape, b, icon);
 }
 
 /**
@@ -548,7 +578,7 @@ function shapeRoom(shape: Shape): Vec {
   if (shape === "cylinder" || shape === "bucket") return { x: 0, y: 2 * RIM };
   if (shape === "browser") return { x: 0, y: BAR };
   if (shape === "folder") return { x: 0, y: TAB };
-  if (shape === "terminal" || shape === "lambda" || shape === "clock") return { x: 0, y: PROMPT };
+  if (shape === "terminal" || shape === "lambda" || shape === "clock" || shape === "icon") return { x: 0, y: PROMPT };
   if (shape === "monitor") return { x: 0, y: STAND };
   if (shape === "phone") return { x: BEZEL, y: 0 };
   if (shape === "pipe") return { x: 2 * RIM, y: 0 };
@@ -677,6 +707,31 @@ export function pushOut(box: Box, obstacle: Box, gap: number): Vec {
   ];
   const dist = (p: Vec) => Math.abs(p.x - box.x) + Math.abs(p.y - box.y);
   return moves.reduce((a, b) => (dist(b) < dist(a) ? b : a));
+}
+
+/**
+ * The free place nearest to where a box would go, keeping half the gap from every box taken: where it is, or the
+ * nearest one on a grid of half its size and the gap around it, in any direction. A move along a row costs less than one
+ * across, and of two places as near, the one right or below wins, so that the box stays in sight near where it was
+ * asked for rather than past everything in its row.
+ */
+export function nearestFree(box: Box, taken: Box[], gap: number, rings = 16): Vec {
+  const free = (p: Vec) => !taken.some((t) => overlaps({ ...box, ...p }, t, gap / 2));
+  if (free(box)) return { x: box.x, y: box.y };
+  const sx = (box.width + gap) / 2;
+  const sy = (box.height + gap) / 2;
+  let best: Vec | null = null;
+  let bestCost = Infinity;
+  for (let i = -rings; i <= rings; i++) {
+    for (let j = -rings; j <= rings; j++) {
+      const cost = Math.abs(i * sx) + 1.5 * Math.abs(j * sy) - (i > 0 ? 0.2 : 0) - (j > 0 ? 0.1 : 0);
+      if (cost >= bestCost) continue;
+      const p = { x: box.x + i * sx, y: box.y + j * sy };
+      if (free(p)) [best, bestCost] = [p, cost];
+    }
+  }
+  // None near enough: right of everything.
+  return best ?? { x: Math.max(...taken.map((t) => t.x + t.width)) + gap, y: box.y };
 }
 
 export const contains = (outer: Box, p: Vec) => p.x >= outer.x && p.x <= outer.x + outer.width && p.y >= outer.y && p.y <= outer.y + outer.height;

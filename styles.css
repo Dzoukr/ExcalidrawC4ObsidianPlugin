@@ -265,6 +265,23 @@ body .modal .modal-header-button.c4-modal-action {
   white-space: normal;
 }
 
+/* A custom container's icon: a button showing it with its name, and the icons to pick from, each with its picture. */
+.c4-icon-pick,
+.c4-icon-suggestion {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.c4-icon-glyph {
+  display: inline-flex;
+  color: var(--text-normal);
+}
+
+.c4-icon-none {
+  color: var(--text-muted);
+}
+
 /* A form's metadata: key: value rows in the column of the fields, with a button to remove each and one to add more. */
 .c4-form .c4-metadata {
   align-items: flex-start;

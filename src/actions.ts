@@ -1,5 +1,6 @@
 import { AppState, El, ExcalidrawAutomate, ExcalidrawView, getEA } from "./excalidraw";
 import { ghostSource } from "./ghosts";
+import { strokesOf } from "./icons";
 import { Group, LayerGroups, labelSize } from "./groups";
 import type { Shape } from "./highlight";
 import { DiagramId, Scene, copiesOf, endOfLevel, endsOf, grid, levelsUpTo, newId, nextSlot, ofLevel, relationshipsBelow, row, unrelated } from "./layers";
@@ -8,7 +9,7 @@ import { Theme, colorsOf, themeOfNewDrawings } from "./themes";
 import {
   BOUNDARY_LABEL, BOUNDARY_PAD, Box, C4Element, C4Group, Look, boundaryData, groupLookOf, C4Relationship, GROUP_LABEL, GROUP_PAD, fittedGroup, groupData, groupLabelAt, ELEMENT_WIDTH, KEY, MIN_HEIGHT, PADDING, RELATIONSHIP_COLOR, Vec, ViewKind, allowedKinds, arrowMidpoint,
   boundaryLabel, bounds, boxSize, canBeExternal, center, contains, edgePoint, elementData, fittedBoundary, laneLine, laneOffsets, normalOf, elementLabel, lookOf, isGhost, makeWay, nameText, FONT_SIZE, NAME_FONT_SIZE, lookSignature, lookSignatureOf, useColors,
-  overlaps, parentFor, parentKind, pushOut, relationshipData, textRoom, wayBack, relationshipLabel, zoomView, nearestIn, boxStyle, partOf, shapeOf, shapeParts, corners, shapeVersionOf, type Ink, MISPLACED_LOOK, SHAPE_VERSION, STROKE_WIDTH, LINE_WIDTH,
+  overlaps, parentFor, parentKind, pushOut, relationshipData, textRoom, wayBack, relationshipLabel, zoomView, nearestIn, boxStyle, partOf, shapeOf, shapeParts, iconOf, nearestFree, corners, shapeVersionOf, type Ink, MISPLACED_LOOK, SHAPE_VERSION, STROKE_WIDTH, LINE_WIDTH,
 } from "./model";
 import type { Direction } from "./model";
 
@@ -380,6 +381,9 @@ function addBox(ea: ExcalidrawAutomate, ltx: LayerTx, data: C4Element, at: Vec, 
   return ltx.get(id)!;
 }
 
+/** The parts drawing an element's shape around its box, its icon's among them. */
+const partsFor = (data: C4Element, box: Box) => shapeParts(shapeOf(data), box, strokesOf(iconOf(data)));
+
 /**
  * Draws the parts of a box's shape behind it, in place of the ones it had: grouped with the box and its text, so that
  * they are selected, moved and deleted together.
@@ -390,7 +394,7 @@ function reshape(ea: ExcalidrawAutomate, ltx: LayerTx, boxId: string, data: C4El
   const old = ltx.partsOf(boxId);
   const own = old[0]?.groupIds?.[0];
   for (const p of old) ltx.remove(p.id);
-  const parts = shapeParts(shapeOf(data), box);
+  const parts = partsFor(data, box);
   const label = boundText(ltx, box);
   const groupIds = [...(parts.length || label ? [own ?? newId()] : []), ...(box.groupIds ?? []).filter((g) => g !== own)];
   if (JSON.stringify(groupIds) !== JSON.stringify(box.groupIds ?? [])) {
@@ -408,9 +412,9 @@ function reshape(ea: ExcalidrawAutomate, ltx: LayerTx, boxId: string, data: C4El
       strokeColor: color[part.stroke],
       backgroundColor: color[part.fill],
       fillStyle: "solid",
-      strokeWidth: STROKE_WIDTH,
+      strokeWidth: part.fine ? LINE_WIDTH : STROKE_WIDTH,
       strokeStyle: "solid",
-      roughness: box.roughness,
+      roughness: part.fine ? 0 : box.roughness,
       opacity: 100,
       angle: 0,
     });
@@ -468,7 +472,7 @@ function completeShapes(ea: ExcalidrawAutomate, ltx: LayerTx) {
       const data = elementData(b.customData)!;
       const parts = scene.parts(b.id);
       const named = b.boundElements?.some((r) => r.type === "text") ? 1 : 0; // the bold name over its text
-      const shaped = parts.length === shapeParts(shapeOf(data), b).length + named && parts.every((p) => shapeVersionOf(p.customData) === SHAPE_VERSION);
+      const shaped = parts.length === partsFor(data, b).length + named && parts.every((p) => shapeVersionOf(p.customData) === SHAPE_VERSION);
       const look = lookSignature(lookOf(data));
       const colored = parts.every((p) => lookSignatureOf(p.customData) === look) && b.backgroundColor === boxStyle(data).backgroundColor;
       // Only new colors leave the box its size, which may be one the user gave it.
@@ -491,8 +495,8 @@ export function addElement(view: ExcalidrawView, element: C4Element): boolean {
     const place = placeIn(view, scene, layer, data);
     const added = addBox(ea, ltx, data, place.at, layer);
     id = added.id;
-    // Beside the boxes already there, not on top of one: further right, the way the next one in a row goes.
-    const free = freeSpot(added, scene.boxes(layer));
+    // Not on top of the boxes already there: in the free place nearest to where it was asked for.
+    const free = nearestFree(added, scene.boxes(layer), GAP);
     if (free.x !== added.x || free.y !== added.y) moveBox(ltx, id, free.x - added.x, free.y - added.y);
     if (place.group) setMembers(ltx, layer, new Map([[data.id!, place.group.data.group]]));
     const box = ltx.get(id)!;
@@ -528,7 +532,7 @@ function copyPlace(scene: Scene, layer: DiagramId, data: C4Element, box: Box): V
   const outside = rect && !(v && data.parent === v.scope);
   // Out of the boundary it does not belong in, then clear of the boxes there.
   const p = outside && overlaps(box, rect, GAP / 2) ? pushOut(box, rect, GAP) : { x: box.x, y: box.y };
-  return freeSpot({ ...box, ...p }, outside ? [rect, ...scene.boxes(layer)] : scene.boxes(layer));
+  return nearestFree({ ...box, ...p }, outside ? [rect, ...scene.boxes(layer)] : scene.boxes(layer), GAP);
 }
 
 /** Whether the drawing has an element of the kind, on any layer. */

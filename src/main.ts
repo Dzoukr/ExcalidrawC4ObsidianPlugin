@@ -1,5 +1,5 @@
 import {
-  App, ColorComponent, FuzzySuggestModal, ItemView, Menu, Modal, Notice, Plugin, PluginSettingTab, Setting, SettingDefinitionItem, SettingDefinitionPage,
+  App, ColorComponent, ExtraButtonComponent, FuzzyMatch, FuzzySuggestModal, ItemView, Menu, Modal, Notice, Plugin, PluginSettingTab, Setting, SettingDefinitionItem, SettingDefinitionPage,
   normalizePath, setIcon,
 } from "obsidian";
 import {
@@ -10,8 +10,8 @@ import {
 import { Guard, guardLevels, protectStore, refreshCanvas, selectionOf } from "./layertx";
 import { AppState, El, ExcalidrawAPI, ExcalidrawView, VIEW_TYPE_EXCALIDRAW, isExcalidrawView } from "./excalidraw";
 import {
-  Box, C4Element, C4Kind, CONTAINER_TYPES, CONTAINER_TYPE_TITLES, ContainerType, Ink, KINDS, Shape, boundaryData, bounds, canBeExternal, cleanMetadata, elementData, groupData, hasTechnology,
-  isContainerType, kindTitle, levelOf, shapeDrawing, shapeOf, zoomView, LOOK_KEYS, LOOK_KEY_TITLES, LOOK_PARTS, LOOK_PART_TITLES, Look, LookKey,
+  Box, C4Element, C4Kind, CONTAINER_TYPES, CUSTOM_PICTURE, Vec, CONTAINER_TYPE_TITLES, ContainerType, Ink, KINDS, Shape, boundaryData, bounds, canBeExternal, cleanMetadata, elementData, groupData, hasTechnology,
+  iconOf, isContainerType, kindTitle, levelOf, shapeDrawing, shapeOf, zoomView, LOOK_KEYS, LOOK_KEY_TITLES, LOOK_PARTS, LOOK_PART_TITLES, Look, LookKey,
   lookOf, ownLook, KEY, C4Group, GROUP_LOOK_PARTS, groupLookOf, lookPartsOf, ownGroupLook,
 } from "./model";
 import {
@@ -22,6 +22,7 @@ import { C4Panel, PANEL_POSITIONS, PanelPosition, isPanelPosition } from "./pane
 import { MODE, MODE_KEY, Owner, isAlone, ownerOf, register } from "./mode";
 import { PLAIN, offer, withdraw } from "./chooser";
 import { Highlight } from "./highlight";
+import { iconIds, iconName } from "./icons";
 import { DEFAULT_SHORTCUTS, SHORTCUT_ACTIONS, SHORTCUT_NAMES, ShortcutAction, Shortcuts, actionOf, isMove, loadShortcuts, shortcutOf } from "./keys";
 
 const NO_EXCALIDRAW = "The Excalidraw plugin's scripting API is not available.";
@@ -735,6 +736,7 @@ export default class ExcalidrawC4Plugin extends Plugin {
     useDrawingColors(view); // the colors the form shows
     let external = !!data.external;
     let type: ContainerType = isContainerType(data.type) ? data.type : "generic";
+    let icon = data.icon;
     const heading = () => `${verb} ${kindTitle(data.kind, external).toLowerCase()}`;
     const values = { name: data.name, technology: data.technology ?? "", description: data.description ?? "" };
     const fields = elementFields(data.kind, external).map((f) => ({ ...f, value: values[f.key as keyof typeof values] }));
@@ -745,9 +747,12 @@ export default class ExcalidrawC4Plugin extends Plugin {
       const technology = hasTechnology(data.kind) ? v.technology : undefined;
       const metadata = cleanMetadata(rows);
       useDrawingColors(view); // for its own colors, those that differ from its type's in the drawing's theme
-      const saved = save({
-        ...data, ...typed(), name: v.name ?? "", technology, description: v.description, metadata, look: ownLook(typed(), look),
-      });
+      const element: C4Element = {
+        ...data, ...typed(), icon, name: v.name ?? "", technology, description: v.description, metadata, look: ownLook(typed(), look),
+      };
+      // Only a custom container has an icon.
+      if (!iconOf(element)) delete element.icon;
+      const saved = save(element);
       if (!saved) new Notice(NO_EXCALIDRAW);
     }, verb === "Edit" ? "Save" : "Add");
     const colors = lookPickers(
@@ -756,10 +761,18 @@ export default class ExcalidrawC4Plugin extends Plugin {
       (part, value) => (look = { ...look, [part]: value }),
       () => (look = {}),
     );
-    if (data.kind === "container") modal.before.push(typeToggle(() => type, (t) => {
-      type = t;
-      colors.refresh();
-    }));
+    if (data.kind === "container") {
+      let iconSetting: HTMLElement | undefined;
+      modal.before.push(typeToggle(() => type, (t) => {
+        type = t;
+        iconSetting?.toggle(t === "custom");
+        colors.refresh();
+      }));
+      modal.before.push(iconPicker(this.app, () => icon, (i) => (icon = i), (el) => {
+        iconSetting = el;
+        el.toggle(type === "custom");
+      }));
+    }
     // Containers and components are external as their system is.
     if (canBeExternal(data.kind)) modal.extras.push(externalToggle(() => external, (on) => {
       external = on;
@@ -850,11 +863,12 @@ function elementFields(kind: C4Kind, external: boolean): Field[] {
   return fields;
 }
 
-/** A choice in a row of buttons with pictures: what it stands for, its name, and the shape pictured. */
+/** A choice in a row of buttons with pictures: what it stands for, its name, and the shape pictured, with its icon. */
 interface PictureOption<T extends string> {
   value: T;
   title: string;
   shape: Shape;
+  icon?: Vec[][];
 }
 
 /**
@@ -866,7 +880,7 @@ const pictureToggle = <T extends string>(name: string, options: PictureOption<T>
   const row = setting.controlEl.createDiv({ cls: "c4-type-toggle", attr: { role: "radiogroup", "aria-label": name } });
   const buttons = options.map((o) => {
     const b = row.createEl("button", { cls: "c4-type-option", attr: { type: "button", role: "radio", "aria-label": o.title } });
-    shapePicture(b, o.shape);
+    shapePicture(b, o.shape, o.icon);
     b.createSpan({ cls: "c4-type-name", text: o.title });
     return b;
   });
@@ -898,15 +912,53 @@ const pictureToggle = <T extends string>(name: string, options: PictureOption<T>
 
 /** The form setting choosing what a container is, which gives its box its shape. */
 const typeToggle = (get: () => ContainerType, set: (type: ContainerType) => void) =>
-  pictureToggle("Type", CONTAINER_TYPES.map((t) => ({ value: t, title: CONTAINER_TYPE_TITLES[t], shape: shapeOf({ kind: "container", type: t }) })), get, set);
+  pictureToggle("Type", CONTAINER_TYPES.map((t) => ({
+    value: t,
+    title: CONTAINER_TYPE_TITLES[t],
+    // A custom container can have any icon: its picture has one standing for them all.
+    ...(t === "custom" ? { shape: "icon" as const, icon: CUSTOM_PICTURE } : { shape: shapeOf({ kind: "container", type: t }) }),
+  })), get, set);
+
+/**
+ * The form setting picking a custom container's icon, drawn in the top left corner of its box: a button showing the
+ * icon, which opens the icons to search, and one to take it away. `shown` gets the setting, to show only for custom
+ * containers.
+ */
+const iconPicker = (app: App, get: () => string | undefined, set: (icon: string | undefined) => void, shown: (el: HTMLElement) => void) => (el: HTMLElement) => {
+  const setting = new Setting(el).setName("Icon").setClass("c4-field");
+  const pick = setting.controlEl.createEl("button", { cls: "c4-icon-pick", attr: { type: "button" } });
+  let clear: ExtraButtonComponent | undefined;
+  const show = () => {
+    const id = get();
+    pick.empty();
+    if (id) {
+      setIcon(pick.createSpan({ cls: "c4-icon-glyph" }), id);
+      pick.createSpan({ text: iconName(id) });
+    } else pick.createSpan({ cls: "c4-icon-none", text: "Choose an icon" });
+    clear?.extraSettingsEl.toggle(!!id);
+  };
+  pick.addEventListener("click", () => new IconModal(app, (id) => {
+    set(id);
+    show();
+  }).open());
+  setting.addExtraButton((b) => {
+    clear = b;
+    b.setIcon("x").setTooltip("No icon").onClick(() => {
+      set(undefined);
+      show();
+    });
+  });
+  show();
+  shown(setting.settingEl);
+};
 
 /** The colors of a picture of a shape: the current text color for its lines, the background for its fill. */
 const PICTURE_INK: Record<Ink, string> = { outline: "currentColor", detail: "currentColor", body: "var(--background-primary)", none: "none" };
 
 /** Draws a small picture of a shape into an element, from the same parts the shape is drawn with on the canvas. */
-function shapePicture(el: HTMLElement, shape: Shape) {
+function shapePicture(el: HTMLElement, shape: Shape, icon: Vec[][] = []) {
   // A small box, so the details of the shapes show; a person's head is as large as on the canvas, so a person's box is too.
-  const parts = shapeDrawing(shape, shape === "person" ? { x: 0, y: 0, width: 240, height: 150 } : { x: 0, y: 0, width: 100, height: 64 });
+  const parts = shapeDrawing(shape, shape === "person" ? { x: 0, y: 0, width: 240, height: 150 } : { x: 0, y: 0, width: 100, height: 64 }, icon);
   const frame = bounds(parts.map((p) => p.box ?? bounds((p.points ?? []).map((v) => ({ ...v, width: 0, height: 0 })))!), 8)!;
   const svg = el.createSvg("svg", {
     cls: "c4-type-picture",
@@ -1368,6 +1420,34 @@ class ThemeModal extends FuzzySuggestModal<{ id: Theme; name: string }> {
 
   onChooseItem(t: { id: Theme; name: string }) {
     this.choose(t.id);
+  }
+}
+
+/** Picks an icon by its name, each shown with its picture. */
+class IconModal extends FuzzySuggestModal<string> {
+  constructor(app: App, private readonly choose: (id: string) => void) {
+    super(app);
+    this.setPlaceholder("Icon of the container");
+  }
+
+  getItems(): string[] {
+    return iconIds();
+  }
+
+  getItemText(id: string): string {
+    return iconName(id);
+  }
+
+  renderSuggestion(match: FuzzyMatch<string>, el: HTMLElement) {
+    super.renderSuggestion(match, el);
+    el.addClass("c4-icon-suggestion");
+    const glyph = createSpan({ cls: "c4-icon-glyph" });
+    setIcon(glyph, match.item);
+    el.prepend(glyph);
+  }
+
+  onChooseItem(id: string) {
+    this.choose(id);
   }
 }
 

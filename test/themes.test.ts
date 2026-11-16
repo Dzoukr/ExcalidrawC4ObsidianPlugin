@@ -33,6 +33,14 @@ test("a user's theme is found by its id; a missing one has the Classic colors", 
   }
 });
 
+test("a type of container a saved theme has no colors for has those of its generic containers", () => {
+  const generic = { stroke: "#123456", background: "#abcdef", text: "#654321" };
+  const colors = mergeColors({ "container-generic": generic, "container-database": { stroke: "#111111" } });
+  assert.deepEqual(colors["container-custom"], generic);
+  assert.equal(colors["container-database"].stroke, "#111111", "a type with colors of its own keeps them");
+  assert.deepEqual(mergeColors({})["container-custom"], DEFAULT_LOOKS["container-custom"]);
+});
+
 test("themes go out as JSON without their ids and come back in", () => {
   const colors = mergeColors({ component: { background: "#abcdef" } });
   const json = themesToJson([{ name: "Mine", colors }]);
