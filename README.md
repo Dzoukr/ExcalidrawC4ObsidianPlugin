@@ -99,7 +99,7 @@ All options are in **Settings → Excalidraw C4 Model**.
 | Setting | Default | Description |
 |---|---|---|
 | Show panel | On | Buttons for adding, connecting and editing elements, docked on every drawing. |
-| Panel position | Right | A row at the bottom or top of the drawing, or a column on its left or right side. |
+| Panel position | Right | A row at the bottom or top of the drawing, or a column on its left or right side. On phones, where Excalidraw's own toolbars take the bottom, Bottom shows it at the top. |
 | Ask what a new drawing is for | Off | On a drawing without C4 elements that is not yet anybody's, offers C4 diagrams or plain Excalidraw instead of taking it over. With another plugin drawing its own kind of diagram enabled, the plugins always ask. |
 | Theme of new drawings | Classic | The colors of new drawings: a built-in theme or one of your own. Each drawing keeps its own. |
 

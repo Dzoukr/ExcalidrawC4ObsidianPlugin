@@ -118,6 +118,81 @@
   pointer-events: none;
 }
 
+/* On a phone the buttons are compact, sized here rather than by Obsidian's larger mobile defaults. */
+.is-phone .c4-panel {
+  gap: 2px;
+  padding: 2px;
+}
+
+.is-phone .c4-group {
+  gap: 0;
+}
+
+.is-phone .c4-panel .c4-btn {
+  --icon-size: 18px;
+  width: 28px;
+  height: 28px;
+  min-height: 0;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.is-phone .c4-title + .c4-group,
+.is-phone .c4-group + .c4-group {
+  padding-left: 2px;
+}
+
+.is-phone .c4-pos-left .c4-title + .c4-group,
+.is-phone .c4-pos-right .c4-title + .c4-group,
+.is-phone .c4-pos-left .c4-group + .c4-group,
+.is-phone .c4-pos-right .c4-group + .c4-group {
+  padding-left: 0;
+  padding-top: 2px;
+}
+
+/* Clear Excalidraw's bottom toolbar on phones and tablets. */
+body.is-mobile .c4-panel.c4-pos-bottom {
+  bottom: 72px;
+}
+
+/* Phones: Excalidraw's tool and property bars fill the bottom, so a bottom panel docks at the top. */
+body.is-phone .c4-panel.c4-pos-bottom {
+  top: 72px;
+  bottom: auto;
+}
+
+/* A row on a phone stays one line: the badge and the title go, and a swipe reaches buttons that still don't fit. */
+.is-phone .c4-panel.c4-pos-bottom,
+.is-phone .c4-panel.c4-pos-top {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  max-width: calc(100% - 8px);
+  /* Centered, the part overflowing on the left could not be scrolled to. */
+  justify-content: flex-start;
+  touch-action: pan-x;
+  scrollbar-width: none;
+}
+
+.is-phone .c4-pos-bottom .c4-badge,
+.is-phone .c4-pos-top .c4-badge,
+.is-phone .c4-pos-bottom .c4-title,
+.is-phone .c4-pos-top .c4-title {
+  display: none;
+}
+
+.is-phone .c4-pos-bottom > .c4-group,
+.is-phone .c4-pos-top > .c4-group {
+  flex-shrink: 0;
+}
+
+.is-phone .c4-pos-bottom .c4-title + .c4-group,
+.is-phone .c4-pos-top .c4-title + .c4-group {
+  border-left: none;
+  padding-left: 0;
+}
+
 /* A form's icon button, styled as its close button and placed left of it, over Obsidian's own placement of it. */
 body .modal .modal-header-button.c4-modal-action {
   inset-inline-end: var(--c4-action-end, 48px);
@@ -347,4 +422,42 @@ body .modal .modal-header-button.c4-modal-action {
 .dzoukr-diagram-choice[data-kind="excalidraw"] {
   font-weight: var(--font-normal);
   color: var(--text-muted);
+}
+
+/* Clear Excalidraw's bottom toolbar on phones and tablets. */
+body.is-mobile .dzoukr-diagram-chooser {
+  bottom: 72px;
+}
+
+/* Phones: Excalidraw's tool and property bars fill the bottom, so the row docks at the top. It is one compact line,
+   its label shortened, that scrolls sideways when the choices still don't fit. */
+body.is-phone .dzoukr-diagram-chooser {
+  top: 72px;
+  bottom: auto;
+  max-width: calc(100% - 8px);
+  flex-wrap: nowrap;
+  justify-content: flex-start;
+  overflow-x: auto;
+  scrollbar-width: none;
+  touch-action: pan-x;
+  gap: 4px;
+  padding: 2px 2px 2px 8px;
+}
+
+body.is-phone .dzoukr-diagram-chooser > * {
+  flex-shrink: 0;
+}
+
+body.is-phone .dzoukr-diagram-chooser-label {
+  white-space: nowrap;
+}
+
+body.is-phone .dzoukr-diagram-chooser-label-long {
+  display: none;
+}
+
+body.is-phone .dzoukr-diagram-choice {
+  height: 30px;
+  padding: 0 10px;
+  white-space: nowrap;
 }

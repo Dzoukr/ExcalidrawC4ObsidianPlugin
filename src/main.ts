@@ -1335,7 +1335,7 @@ class C4SettingTab extends PluginSettingTab {
       },
       {
         name: "Panel position",
-        desc: "A row at the bottom or top of the drawing, or a column on its left or right side.",
+        desc: "A row at the bottom or top of the drawing, or a column on its left or right side. On phones, where Excalidraw's own toolbars take the bottom, Bottom shows it at the top.",
         control: { type: "dropdown", key: "panelPosition", options: PANEL_POSITIONS },
       },
     ];
