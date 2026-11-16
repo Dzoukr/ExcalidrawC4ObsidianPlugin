@@ -2,7 +2,7 @@ import type { AppState } from "./excalidraw";
 import type { Box, Vec } from "./model";
 
 /** What is selected, as drawn: a box, or a relationship's line with its label. */
-export interface Shape {
+export interface SelectionShape {
   box?: Box;
   points?: Vec[];
   label?: Box;
@@ -13,8 +13,9 @@ const BADGE = 9; // radius of the order badges
 
 /**
  * An outline over the canvas around what is selected, clearer than Excalidraw's own, above all on a relationship's
- * thin line: as the mind map plugin marks where a topic is dropped, a thin accent border over a faint accent fill. Numbered when more than one thing is selected, in the order of the selection, which is the way a
- * relationship goes. Never takes the pointer.
+ * thin line: as the mind map plugin marks where a topic is dropped, a thin accent border over a faint accent fill.
+ * Numbered when more than one thing is selected, in the order of the selection, which is the way a relationship goes.
+ * Never takes the pointer.
  */
 export class Highlight {
   private readonly el: SVGSVGElement;
@@ -27,7 +28,7 @@ export class Highlight {
     if (this.el.parentElement !== parent) parent.appendChild(this.el);
   }
 
-  update(shapes: Shape[], s: AppState, host: HTMLElement) {
+  update(shapes: SelectionShape[], s: AppState, host: HTMLElement) {
     this.el.empty();
     if (!shapes.length) return;
     const zoom = s.zoom?.value ?? 1;

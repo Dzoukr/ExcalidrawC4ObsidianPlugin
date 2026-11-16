@@ -1,7 +1,7 @@
 // An icon as the strokes it is drawn with on the canvas: lines through points in a square of side 1. Pure: the points
 // along the icon's outlines are measured by the caller (see icons.ts).
 
-import type { Vec } from "./model.ts"; // with its extension, for the tests running in Node
+import type { Vec } from "./geometry.ts"; // with its extension, for the tests running in Node
 
 /** The lines an icon is drawn with, in a square of side 1; a line of one point is a dot. */
 export type IconStrokes = Vec[][];

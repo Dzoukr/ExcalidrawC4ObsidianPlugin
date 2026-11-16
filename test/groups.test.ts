@@ -1,28 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Scene } from "../src/layers.ts";
 import { LayerGroups, area, isGroupElement } from "../src/groups.ts";
 import { ghostsFor } from "../src/ghosts.ts";
 import { CONTEXT, FONT_SIZE, GROUP_LABEL, GROUP_PAD, KEY, fittedGroup, groupData, groupLabelAt } from "../src/model.ts";
-import type { C4Element, C4Group, ViewKind } from "../src/model.ts";
+import type { C4Group } from "../src/model.ts";
 import type { El } from "../src/excalidraw.ts";
-
-const base = { x: 0, y: 0, width: 100, height: 100, strokeColor: "", backgroundColor: "", roughness: 0 };
-
-const box = (boxId: string, data: Partial<C4Element> & Pick<C4Element, "kind">, at: Partial<El> = {}): El => ({
-  ...base, ...at, id: boxId, type: "rectangle", customData: { [KEY]: { name: boxId, ...data } },
-});
+import { base, boundary, box, sceneOf } from "./fixtures.ts";
 
 const group = (rectId: string, data: Partial<C4Group> & Pick<C4Group, "group">, at: Partial<El> = {}): El[] => [
   { ...base, ...at, id: rectId, type: "rectangle", strokeStyle: "dotted", customData: { [KEY]: { name: rectId, members: [], ...data } } },
   { ...base, id: `${rectId}-label`, type: "text", width: 60, height: 20, fontSize: FONT_SIZE, customData: { [KEY]: { part: rectId } } },
 ];
-
-const sceneOf = (layers: Record<string, El[]>) => {
-  const views: Record<string, ViewKind | null> = { [CONTEXT]: null };
-  for (const l of Object.keys(layers)) if (l !== CONTEXT) views[l] = "container";
-  return new Scene(new Map(Object.entries(layers)), views);
-};
 
 /** Applies changes to elements, as a commit would. */
 const apply = (els: El[], patches: [string, Partial<El>][]) => els.map((e) => ({ ...e, ...Object.fromEntries(patches.filter(([id]) => id === e.id).flatMap(([, p]) => Object.entries(p))) }));
@@ -130,8 +118,7 @@ test("groups are shown only on their own level, not among the ghosts of the leve
     box("mail", { kind: "system", id: "m" }, { x: 400, y: 0 }),
     ...group("g1", { group: "g", members: ["m"] }),
   ];
-  const tag = { [KEY]: { boundary: "s" } };
-  const shop = [{ ...base, id: "bnd", type: "rectangle", customData: tag }, box("web", { kind: "container", id: "w", parent: "s" })];
+  const shop = [boundary("bnd", "s"), box("web", { kind: "container", id: "w", parent: "s" })];
   const ghosts = ghostsFor(sceneOf({ [CONTEXT]: context, s: shop }), "s");
   assert.ok(ghosts.some((g) => g.id === "c4g-mail"));
   assert.ok(!ghosts.some((g) => g.id === "c4g-g1"));
@@ -153,9 +140,9 @@ test("a label scaled with its group is drawn in its own font size again", () => 
 });
 
 test("a line takes up the area of its points, wherever it starts", () => {
-  const line = { ...base, type: "line", x: 300, y: 50, width: 240, height: 10, points: [[0, 0], [-120, 10], [-240, 0]] };
+  const line = { ...base, id: "line", type: "line", x: 300, y: 50, width: 240, height: 10, points: [[0, 0], [-120, 10], [-240, 0]] };
   assert.deepEqual(area(line), { x: 60, y: 50, width: 240, height: 10 });
-  assert.deepEqual(area({ ...base, x: 1, y: 2 }), { x: 1, y: 2, width: 100, height: 100 });
+  assert.deepEqual(area({ ...base, id: "r", type: "rectangle", x: 1, y: 2 }), { x: 1, y: 2, width: 100, height: 100 });
 });
 
 test("a group fits the shape of a box, not where the lines drawing it start", () => {

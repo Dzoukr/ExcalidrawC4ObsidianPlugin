@@ -1,13 +1,11 @@
-import { AppState, El, ExcalidrawAutomate, ExcalidrawView, SceneTx } from "./excalidraw";
+import { AppState, El, ExcalidrawAutomate, ExcalidrawView, SceneTx, nextVersion } from "./excalidraw";
 import { ghostsFor } from "./ghosts";
 import { LayerGroups } from "./groups";
 import { DiagramId, Scene, boxBindings, endsOf, guarded, markPatches } from "./layers";
 import { C4Store, CONTEXT, KEY, ViewKind, bounds, elementData, isGhost, partOf, relationshipData, storeData } from "./model";
 
-const randomNonce = () => Math.floor(Math.random() * 2 ** 31);
-
 /** The invisible element keeping the layers that are not on the canvas. */
-export const findCarrier = (els: readonly El[]): El | undefined => els.find((e) => !e.isDeleted && storeData(e.customData));
+const findCarrier = (els: readonly El[]): El | undefined => els.find((e) => !e.isDeleted && storeData(e.customData));
 
 /**
  * The selection of elements, as Excalidraw makes it when they are clicked: a box drawn with parts is selected with its
@@ -59,12 +57,15 @@ export function protectStore(view: ExcalidrawView) {
   if (!last || last.path !== path) return;
   const store = storeData(last.carrier.customData);
   if (!store || !Object.keys(store.hidden).length) return;
-  const back = { ...last.carrier, isDeleted: false, locked: true, version: (last.carrier.version ?? 0) + 1, versionNonce: randomNonce() };
+  const back = { ...last.carrier, isDeleted: false, locked: true, ...nextVersion(last.carrier) };
   const others = api.getSceneElementsIncludingDeleted().filter((e) => e.id !== back.id);
   api.updateScene({ elements: [...others, back], captureUpdate: "NEVER" });
 }
 
-/** Elements the plugin took off the canvas, which the guard of the levels above lets go. */
+/**
+ * Elements the plugin took off the canvas, which the guard of the levels above lets go. Only until the guard has seen
+ * them deleted: after that, no guard keeps them any more.
+ */
 const removedByPlugin = new Set<string>();
 
 /**
@@ -129,6 +130,8 @@ export function guardLevels(view: ExcalidrawView, last: Guard | undefined): { gu
     if (back.has(id) || last!.keep.has(id) || !byId.get(id)?.isDeleted) continue;
     if (!removedByPlugin.delete(id)) deleted.push(ends);
   }
+  // The ones taken off this drawing that were not guarded: the guard from now on is of what is still there.
+  for (const id of removedByPlugin) if (byId.get(id)?.isDeleted) removedByPlugin.delete(id);
   // What to guard from now on: the elements of the levels above, and the relationships glued to them.
   const { scene, current } = readScene(api.getSceneElements());
   const guard: Guard = { file: view.file?.path, layer: current, keep: new Map(), glued: new Map(), relationships: new Map() };
@@ -192,8 +195,9 @@ function syncGhosts(tx: SceneTx, scene: Scene, current: DiagramId) {
  */
 export class LayerTx {
   readonly tx: SceneTx;
-  private readonly store: C4Store;
+  private readonly store: Omit<C4Store, "hidden">; // the layers not on the canvas are in `hidden`
   private readonly hidden = new Map<DiagramId, Map<string, El>>();
+  private readonly removed: string[] = []; // taken off the canvas
   private carrier: El | undefined;
   private dirty = false;
 
@@ -201,7 +205,7 @@ export class LayerTx {
     this.tx = new SceneTx(view);
     this.carrier = findCarrier(this.tx.live());
     const s = readStore(this.tx.live());
-    this.store = { current: s.current, views: { ...s.views }, hidden: {}, theme: s.theme };
+    this.store = { current: s.current, views: { ...s.views }, theme: s.theme };
     for (const [layer, els] of Object.entries(s.hidden)) this.hidden.set(layer, new Map((els as El[]).map((e) => [e.id, e])));
   }
 
@@ -250,7 +254,7 @@ export class LayerTx {
     for (const m of this.hidden.values()) {
       const e = m.get(id);
       if (!e) continue;
-      m.set(id, { ...e, ...p, version: (e.version ?? 0) + 1, versionNonce: randomNonce(), updated: Date.now() });
+      m.set(id, { ...e, ...p, ...nextVersion(e) });
       this.dirty = true;
       return;
     }
@@ -264,24 +268,21 @@ export class LayerTx {
 
   /** Adds an element right behind another one, in that one's layer. */
   addBehind(el: El, id: string) {
-    if (this.tx.get(id)) return this.tx.addBehind(el, id);
-    for (const [layer, m] of this.hidden) {
-      if (!m.has(id)) continue;
-      const entries = [...m.entries()];
-      entries.splice(entries.findIndex(([k]) => k === id), 0, [el.id, el]);
-      this.hidden.set(layer, new Map(entries));
-      this.dirty = true;
-      return;
-    }
+    this.addNextTo(el, id, 0);
   }
 
   /** Adds an element right in front of another one, in that one's layer. */
   addInFront(el: El, id: string) {
-    if (this.tx.get(id)) return this.tx.addInFront(el, id);
+    this.addNextTo(el, id, 1);
+  }
+
+  /** Adds an element next to another one, in that one's layer: right behind it (`after` 0) or right in front of it (1). */
+  private addNextTo(el: El, id: string, after: 0 | 1) {
+    if (this.tx.get(id)) return after ? this.tx.addInFront(el, id) : this.tx.addBehind(el, id);
     for (const [layer, m] of this.hidden) {
       if (!m.has(id)) continue;
       const entries = [...m.entries()];
-      entries.splice(entries.findIndex(([k]) => k === id) + 1, 0, [el.id, el]);
+      entries.splice(entries.findIndex(([k]) => k === id) + after, 0, [el.id, el]);
       this.hidden.set(layer, new Map(entries));
       this.dirty = true;
       return;
@@ -292,6 +293,7 @@ export class LayerTx {
   remove(id: string) {
     if (this.tx.get(id)) {
       removedByPlugin.add(id);
+      this.removed.push(id);
       return this.tx.delete(id);
     }
     for (const m of this.hidden.values()) {
@@ -329,7 +331,7 @@ export class LayerTx {
     const customData = { [KEY]: { store: this.storeValue() } };
     if (this.carrier) {
       const c = this.carrier;
-      return { ...c, x: at.x, y: at.y, customData, version: (c.version ?? 0) + 1, versionNonce: randomNonce(), updated: Date.now() };
+      return { ...c, x: at.x, y: at.y, customData, ...nextVersion(c) };
     }
     ea.clear();
     const id = ea.addRect(at.x, at.y, 1, 1);
@@ -368,6 +370,8 @@ export class LayerTx {
    */
   switchTo(ea: ExcalidrawAutomate, layer: DiagramId, selected: string[] = []) {
     this.mark();
+    // What was taken off the layer leaves the canvas with it, and the guard starts over on the other layer.
+    if (layer !== this.current) for (const id of this.removed) removedByPlugin.delete(id);
     const leaving = this.elements(this.current);
     const arriving = this.elements(layer);
     this.hidden.set(this.current, new Map(leaving.map((e) => [e.id, e])));

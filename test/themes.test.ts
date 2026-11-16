@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { DEFAULT_LOOKS, LOOK_KEYS, LOOK_PARTS } from "../src/model.ts";
+import { CONTAINER_TYPES, CONTAINER_TYPE_TITLES, DEFAULT_LOOKS, LOOK_KEYS, LOOK_PARTS, shapeOf } from "../src/model.ts";
 import {
   PRESETS, colorsOf, isPreset, mergeColors, newThemeId, parseThemes, setUserThemes, themeName, themeOptions, themeSwatches, themesToJson,
   uniqueName, validTheme,
@@ -13,6 +13,16 @@ test("every built-in theme has every color of every type of element", () => {
     for (const k of LOOK_KEYS) for (const part of LOOK_PARTS) assert.match(c[k][part], /^#[0-9a-f]{6}$/i, `${p} ${k} ${part}`);
   }
   assert.deepEqual(colorsOf("classic"), DEFAULT_LOOKS);
+});
+
+test("every type of container has a title, a shape and its colors in every built-in theme", () => {
+  for (const t of CONTAINER_TYPES) {
+    assert.ok(CONTAINER_TYPE_TITLES[t]?.trim(), t);
+    assert.ok(shapeOf({ kind: "container", type: t }), t);
+    for (const p of Object.keys(PRESETS) as Preset[]) {
+      for (const part of LOOK_PARTS) assert.match(colorsOf(p)[`container-${t}`][part], /^#[0-9a-f]{6}$/i, `${p} ${t} ${part}`);
+    }
+  }
 });
 
 test("a user's theme is found by its id; a missing one has the Classic colors", () => {
@@ -53,6 +63,7 @@ test("themes go out as JSON without their ids and come back in", () => {
 
 test("a new theme gets a new id and a name not taken", () => {
   assert.ok(!isPreset(newThemeId([])));
+  assert.ok(!isPreset("toString"), "nothing every object has is a preset");
   assert.equal(uniqueName("Ocean copy", ["Ocean copy", "Ocean copy 2"]), "Ocean copy 3");
   assert.equal(themeSwatches("filled")[0], colorsOf("filled").person.background);
   assert.equal(themeSwatches("classic")[0], DEFAULT_LOOKS.person.stroke, "a white fill shows the outline instead");

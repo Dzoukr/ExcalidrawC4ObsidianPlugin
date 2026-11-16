@@ -2,7 +2,7 @@
 
 import { getIcon, getIconIds } from "obsidian";
 import { IconStrokes, iconStrokes, splitAtJumps } from "./iconpath";
-import type { Vec } from "./model";
+import type { Vec } from "./geometry";
 
 const PREFIX = "lucide-";
 const STEP = 0.25; // between the points measured along an outline, in the units of the icon (24 to its side)
@@ -19,11 +19,11 @@ export const iconName = (id: string): string => (id.startsWith(PREFIX) ? id.slic
 /** The strokes of an icon in a square of side 1; none for an icon Obsidian does not have. */
 export function strokesOf(id: string | undefined): IconStrokes {
   if (!id) return [];
-  let strokes = cache.get(id);
-  if (!strokes) {
-    strokes = measure(id);
-    cache.set(id, strokes);
-  }
+  const known = cache.get(id);
+  if (known) return known;
+  const strokes = measure(id);
+  // None, as of an icon whose outlines the browser did not lay out, is measured again the next time.
+  if (strokes.length) cache.set(id, strokes);
   return strokes;
 }
 

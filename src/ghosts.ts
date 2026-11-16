@@ -3,10 +3,11 @@
 // Pure: works on plain element data, no Obsidian or Excalidraw runtime.
 
 import type { El } from "./excalidraw";
-import { BOUNDARY_LABEL, BOUNDARY_PAD, CONTEXT, KEY, boundaryData, bounds, center, isGhost, laneLine, laneOffsets, makeWay, normalOf, relationshipData } from "./model.ts";
+import { BOUNDARY_LABEL, BOUNDARY_PAD, CONTEXT, KEY, boundaryData, bounds, isGhost, makeWay, relationshipData } from "./model.ts";
 import type { Box, Vec } from "./model.ts";
 import type { DiagramId, Scene } from "./layers.ts";
 import { isGroupElement } from "./groups.ts";
+import { arrowAlong, labelOn, pairLanes } from "./lanes.ts";
 
 const PREFIX = "c4g-";
 const OPACITY = 0.35;
@@ -151,8 +152,8 @@ export function ghostsFor(scene: Scene, current: DiagramId): El[] {
       }
     }
 
-    // Relationships between where their ends are shown, side by side as on the canvas; one carried down to this
-    // level's boundary meets the boundary where it is shown now.
+    // Relationships between where their ends are shown, side by side in the lanes they have on the canvas; one carried
+    // down to this level's boundary meets the boundary where it is shown now.
     const BOUNDARY = "#boundary"; // no element id has a #
     const endOf = (id: string | undefined): string | undefined => {
       const e = id ? scene.byId.get(id) : undefined;
@@ -160,35 +161,29 @@ export function ghostsFor(scene: Scene, current: DiagramId): El[] {
       return rect && e.id === rect.id ? BOUNDARY : scene.modelId(e) ?? undefined;
     };
     const at = (end: string) => (end === BOUNDARY ? next : shown.get(end));
+    // By the elements they are glued to on this level, which the canvas lays out their lanes by.
     const pairs = new Map<string, { arrow: El; from: string; to: string }[]>();
     for (const arrow of scene.elementsIn(up)) {
       if (arrow.containerId || !relationshipData(arrow.customData)) continue;
       handled.add(arrow.id);
       const text = textOf(scene, arrow);
       if (text) handled.add(text.id);
-      const from = endOf(arrow.startBinding?.elementId);
-      const to = endOf(arrow.endBinding?.elementId);
-      if (!from || !to || from === scope || to === scope || !at(from) || !at(to)) continue;
-      const key = [from, to].sort().join(">");
+      const [from, to] = [arrow.startBinding?.elementId, arrow.endBinding?.elementId];
+      const [a, b] = [endOf(from), endOf(to)];
+      if (!from || !to || !a || !b || a === scope || b === scope || !at(a) || !at(b)) continue;
+      const key = [from, to].sort().join(" ");
       pairs.set(key, [...(pairs.get(key) ?? []), { arrow, from, to }]);
     }
-    for (const [key, list] of pairs) {
-      const [first, second] = key.split(">").map((end) => at(end)!);
-      const normal = normalOf(center(first), center(second));
-      const offsets = laneOffsets(list.length);
-      list.forEach(({ arrow, from, to }, i) => {
-        const a = at(from)!;
-        const b = at(to)!;
-        const { start, end } = laneLine(a, b, normal, offsets[i]);
-        const dx = end.x - start.x;
-        const dy = end.y - start.y;
+    for (const list of pairs.values()) {
+      const end = (id: string) => ({ ...at(endOf(id)!)!, id, boundElements: scene.byId.get(id)!.boundElements });
+      const { from, to } = list[0];
+      const lanes = pairLanes(end(from), end(to), list.map(({ arrow, from }) => ({ id: arrow.id, from })));
+      for (const { arrow } of list) {
+        const lane = lanes.get(arrow.id)!;
         const text = textOf(scene, arrow);
-        out.push(ghost(arrow, {
-          x: start.x, y: start.y, points: [[0, 0], [dx, dy]], width: Math.abs(dx), height: Math.abs(dy),
-          boundElements: text ? [{ type: "text", id: ghostTextId(text.id) }] : null,
-        }));
-        if (text) out.push(ghost(text, { x: start.x + dx / 2 - text.width / 2, y: start.y + dy / 2 - text.height / 2 }));
-      });
+        out.push(ghost(arrow, { ...arrowAlong(lane), boundElements: text ? [{ type: "text", id: ghostTextId(text.id) }] : null }));
+        if (text) out.push(ghost(text, labelOn(lane, text)));
+      }
     }
 
     // Everything else drawn on this level, out of the way like the boxes. Groups are shown only on their own level.

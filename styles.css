@@ -3,6 +3,9 @@
 }
 
 .c4-panel {
+  /* How far a panel docked at the bottom or top keeps from the edge, clear of Excalidraw's own bars there. */
+  --c4-clear-bottom: 60px; /* above Excalidraw's bottom row of zoom and undo controls */
+  --c4-clear-top: 72px; /* below Excalidraw's tool bar */
   position: absolute;
   z-index: 3;
   display: flex;
@@ -31,14 +34,12 @@
   justify-content: center;
 }
 
-/* Sits above Excalidraw's bottom row of zoom and undo controls. */
 .c4-panel.c4-pos-bottom {
-  bottom: 60px;
+  bottom: var(--c4-clear-bottom);
 }
 
-/* Below Excalidraw's tool bar. */
 .c4-panel.c4-pos-top {
-  top: 72px;
+  top: var(--c4-clear-top);
 }
 
 /* Docked on a side: a vertically centered column, scrolling when it doesn't fit. */
@@ -153,13 +154,13 @@
 }
 
 /* Clear Excalidraw's bottom toolbar on phones and tablets. */
-body.is-mobile .c4-panel.c4-pos-bottom {
-  bottom: 72px;
+body.is-mobile .c4-panel {
+  --c4-clear-bottom: 72px;
 }
 
 /* Phones: Excalidraw's tool and property bars fill the bottom, so a bottom panel docks at the top. */
 body.is-phone .c4-panel.c4-pos-bottom {
-  top: 72px;
+  top: var(--c4-clear-top);
   bottom: auto;
 }
 

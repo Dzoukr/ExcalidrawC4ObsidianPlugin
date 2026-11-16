@@ -40,7 +40,7 @@ const RESUME = "Resume C4 editing";
 
 /** Floating control bar docked on an Excalidraw view: add elements, connect and edit the selection. */
 export class C4Panel {
-  readonly el: HTMLElement;
+  private readonly el: HTMLElement;
   private readonly buttons = new Map<Key, HTMLButtonElement>();
   private position: PanelPosition = "right";
   private readonly title: HTMLElement;

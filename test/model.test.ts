@@ -1,12 +1,20 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mergeColors } from "../src/themes.ts";
-import { DEFAULT_LOOKS, lookKeyOf, lookSignature, lookSignatureOf, ownLook, useColors, FONT_SIZE, NAME_FONT_SIZE, ROOM_LINE, SHAPE_VERSION, nameRoom, nameText, shapeDrawing, shapeVersionOf, boxStyle, partOf, shapeOf, shapeParts, cleanMetadata, nearestIn, nearestFree, overlaps, ELEMENT_WIDTH, KEY, MIN_HEIGHT, PADDING, arrowMidpoint, boxSize, edgePoint, laneLine, laneOffsets, normalOf, rayExit, elementData, elementLabel, lookOf, relationshipData, relationshipLabel, wrap } from "../src/model.ts";
+import {
+  CONTAINER_TYPES, DEFAULT_LOOKS, ELEMENT_WIDTH, FONT_SIZE, KEY, MIN_HEIGHT, NAME_FONT_SIZE, PADDING, ROOM_LINE, SHAPE_VERSION, arrowMidpoint, bounds,
+  boxSize, boxStyle, cleanMetadata, contains, edgePoint, elementData, elementLabel, groupLookOf, iconOf, laneLine, laneOffsets, lookKeyOf, lookOf,
+  lookSignature, lookSignatureOf, nameRoom, nameText, nearestFree, nearestIn, normalOf, overlaps, ownGroupLook, ownLook, partOf, rayExit,
+  relationshipData, relationshipLabel, shapeDrawing, shapeOf, shapeParts, shapeVersionOf, wrap,
+} from "../src/model.ts";
+import { withColors } from "./fixtures.ts";
 
 test("wrap breaks at word boundaries and keeps paragraphs", () => {
   assert.deepEqual(wrap("one two three four", 9), ["one two", "three", "four"]);
   assert.deepEqual(wrap("a\nb", 10), ["a", "b"]);
   assert.deepEqual(wrap("supercalifragilistic x", 5), ["supercalifragilistic", "x"]);
+  assert.deepEqual(wrap("", 10), [""]);
+  assert.deepEqual(wrap("  one   two  ", 10), ["one two"], "runs of spaces are one");
 });
 
 const ROOM = `${ROOM_LINE}\n${ROOM_LINE}\n`; // the room for a name of one line
@@ -130,7 +138,10 @@ test("the parts of a shape lie in its box, except a person's head above it and a
   const box = { x: 10, y: 20, width: 240, height: 150 };
   assert.deepEqual(shapeParts("rounded", box), []);
   const inside = (x: number, y: number) => x >= box.x - 1e-9 && x <= box.x + box.width + 1e-9 && y >= box.y - 1e-9 && y <= box.y + box.height + 1e-9;
-  for (const shape of ["terminal", "cylinder", "bucket", "folder", "browser", "phone", "monitor", "lambda", "clock", "pipe"] as const) {
+  // The shapes of the types of container drawn by parts.
+  const shapes = CONTAINER_TYPES.map((type) => shapeOf({ kind: "container", type })).filter((shape) => shape !== "rounded");
+  assert.equal(shapes.length, 10);
+  for (const shape of shapes) {
     const parts = shapeParts(shape, box);
     assert.ok(parts.length, shape);
     for (const p of parts) {
@@ -188,8 +199,7 @@ test("the larger name is drawn over room kept for it at the top of the text of a
 });
 
 test("each type of element has its colors from the settings, an element its own over them", () => {
-  try {
-    useColors(mergeColors({ "container-database": { stroke: "#ff0000", text: "not a color" }, external: { background: "#eeeeee" } }));
+  withColors(mergeColors({ "container-database": { stroke: "#ff0000", text: "not a color" }, external: { background: "#eeeeee" } }), () => {
     const db = { kind: "container" as const, type: "database" as const };
     assert.equal(lookKeyOf(db), "container-database");
     assert.equal(lookKeyOf({ ...db, external: true }), "external");
@@ -203,22 +213,16 @@ test("each type of element has its colors from the settings, an element its own 
     assert.equal(ownLook(db, { stroke: "#ff0000" }), undefined);
     assert.notEqual(lookSignature(lookOf(db)), lookSignature(DEFAULT_LOOKS["container-database"]));
     assert.equal(lookSignatureOf({ [KEY]: { part: "b", look: lookSignature(lookOf(db)) } }), lookSignature(lookOf(db)));
-  } finally {
-    useColors(DEFAULT_LOOKS);
-  }
+  });
 });
 
-test("a group has the colors of groups in the theme, over which it keeps only its own outline and label", async () => {
-  const { groupLookOf, ownGroupLook } = await import("../src/model.ts");
-  try {
-    useColors({ ...DEFAULT_LOOKS, group: { background: "#ffffff", stroke: "#111111", text: "#222222" } });
+test("a group has the colors of groups in the theme, over which it keeps only its own outline and label", () => {
+  withColors({ ...DEFAULT_LOOKS, group: { background: "#ffffff", stroke: "#111111", text: "#222222" } }, () => {
     assert.deepEqual(groupLookOf({}), { background: "#ffffff", stroke: "#111111", text: "#222222" });
     assert.equal(groupLookOf({ look: { stroke: "#ff0000" } }).stroke, "#ff0000");
     assert.deepEqual(ownGroupLook({ stroke: "#ff0000", text: "#222222", background: "#00ff00" }), { stroke: "#ff0000" });
     assert.equal(ownGroupLook({ stroke: "#111111" }), undefined);
-  } finally {
-    useColors(DEFAULT_LOOKS);
-  }
+  });
 });
 
 test("a new box goes to the free place nearest to where it was asked for, not past everything in its row", () => {
@@ -232,4 +236,38 @@ test("a new box goes to the free place nearest to where it was asked for, not pa
   assert.ok(Math.hypot(p.x - asked.x, p.y - asked.y) < 2 * (h + gap), "near where it was asked for");
   assert.ok(rowOf.every((t) => !overlaps({ ...asked, ...p }, t, gap / 2)), "clear of the others");
   assert.deepEqual(nearestFree(asked, [], gap), { x: asked.x, y: asked.y }, "a free place stays");
+});
+
+test("only a custom container has an icon, drawn in its top left corner with thin lines and dots", () => {
+  assert.equal(shapeOf({ kind: "container", type: "custom", icon: "lucide-shield" }), "icon");
+  assert.equal(shapeOf({ kind: "container", icon: "lucide-shield" }), "rounded", "a generic container has none");
+  assert.equal(shapeOf({ kind: "container", type: "generic", icon: "lucide-shield" }), "rounded");
+  assert.equal(shapeOf({ kind: "container", type: "database", icon: "lucide-shield" }), "cylinder");
+  assert.equal(shapeOf({ kind: "system", icon: "lucide-shield" }), "rounded");
+  assert.equal(iconOf({ kind: "container", type: "database", icon: "lucide-shield" }), undefined);
+  assert.equal(iconOf({ kind: "container", type: "custom", icon: "lucide-shield" }), "lucide-shield");
+  assert.equal(iconOf({ kind: "container", icon: "lucide-shield" }), undefined);
+  const box = { x: 10, y: 20, width: 240, height: 150 };
+  const [rect, line, dot] = shapeParts("icon", box, [[{ x: 0, y: 0 }, { x: 1, y: 1 }], [{ x: 0.5, y: 0.5 }]]);
+  assert.equal(rect.type, "rectangle");
+  assert.ok(line.fine && line.type === "line");
+  assert.ok(dot.fine && dot.type === "ellipse");
+  for (const p of line.points!) assert.ok(p.x > box.x && p.x < box.x + 40 && p.y > box.y && p.y < box.y + 30, "in the top left corner");
+  assert.deepEqual(shapeParts("icon", box), [rect], "an icon Obsidian lacks leaves a rounded box");
+  assert.ok(boxSize({ width: 200, height: 120 }, "icon").height > boxSize({ width: 200, height: 120 }).height, "the text keeps clear of the icon");
+});
+
+test("the bounds of boxes are the smallest box around them, grown by a margin; none for no boxes", () => {
+  assert.equal(bounds([]), null);
+  const boxes = [{ x: 0, y: 10, width: 100, height: 50 }, { x: 200, y: -20, width: 50, height: 50 }];
+  assert.deepEqual(bounds(boxes), { x: 0, y: -20, width: 250, height: 80 });
+  assert.deepEqual(bounds(boxes, 10), { x: -10, y: -30, width: 270, height: 100 });
+});
+
+test("a box contains the points in it and on its edges", () => {
+  const box = { x: 0, y: 0, width: 100, height: 50 };
+  assert.ok(contains(box, { x: 50, y: 25 }));
+  assert.ok(contains(box, { x: 100, y: 50 }), "on a corner");
+  assert.ok(!contains(box, { x: 100.5, y: 25 }));
+  assert.ok(!contains(box, { x: 50, y: -1 }));
 });

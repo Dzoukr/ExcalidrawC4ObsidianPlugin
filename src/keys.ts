@@ -16,6 +16,9 @@ export const MOVES = ["up", "down", "left", "right"] as const satisfies readonly
 export type Move = (typeof MOVES)[number];
 export const isMove = (a: ShortcutAction): a is Move => (MOVES as readonly string[]).includes(a);
 
+/** What the keys moving from element to element do, whichever way they go. */
+const SELECT_NEAREST = "The nearest element or relationship, instead of moving the selection. With Shift, adds it to the selection.";
+
 export const SHORTCUT_NAMES: Record<ShortcutAction, { name: string; desc: string }> = {
   add: {
     name: "Add element",
@@ -28,10 +31,10 @@ export const SHORTCUT_NAMES: Record<ShortcutAction, { name: string; desc: string
   zoomIn: { name: "Zoom in", desc: "Into the selected system or container." },
   zoomOut: { name: "Zoom out", desc: "To the level above. Its key never deletes a C4 element; Delete does." },
   edit: { name: "Edit", desc: "The selected element or relationship." },
-  up: { name: "Select above", desc: "The nearest element or relationship, instead of moving the selection. With Shift, adds it to the selection." },
-  down: { name: "Select below", desc: "The nearest element or relationship, instead of moving the selection. With Shift, adds it to the selection." },
-  left: { name: "Select on the left", desc: "The nearest element or relationship, instead of moving the selection. With Shift, adds it to the selection." },
-  right: { name: "Select on the right", desc: "The nearest element or relationship, instead of moving the selection. With Shift, adds it to the selection." },
+  up: { name: "Select above", desc: SELECT_NEAREST },
+  down: { name: "Select below", desc: SELECT_NEAREST },
+  left: { name: "Select on the left", desc: SELECT_NEAREST },
+  right: { name: "Select on the right", desc: SELECT_NEAREST },
 };
 
 /** The parts of a key press a shortcut is made of. */

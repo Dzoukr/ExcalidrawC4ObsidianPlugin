@@ -39,9 +39,9 @@ export function offer(host: HTMLElement, kind: string, label: string, title: str
   if (!row) {
     row = host.createDiv({ cls: ROW });
     // On a phone, the part of the label in its own span goes, to keep the row one line.
-    const label = row.createSpan({ cls: `${ROW}-label`, text: "Use " });
-    label.createSpan({ cls: `${ROW}-label-long`, text: "this drawing " });
-    label.appendText("for");
+    const intro = row.createSpan({ cls: `${ROW}-label`, text: "Use " });
+    intro.createSpan({ cls: `${ROW}-label-long`, text: "this drawing " });
+    intro.appendText("for");
   }
   let plain = choice(row, PLAIN);
   if (!plain) {

@@ -30,11 +30,11 @@ export interface UserTheme {
 /** A drawing's colors, by id: a preset, or one of the user's themes. */
 export type Theme = string;
 
-/** The user theme made from the colors the settings had before themes. */
-export const CUSTOM_THEME = "custom";
-
 /** An outline and text in one color, on a fill. */
 const outlined = (stroke: string, background = "#ffffff", text = stroke): Look => ({ stroke, background, text });
+
+/** External elements in the colorful themes: grey, on a lighter grey, so that the colors are left to what is described. */
+const GREY_EXTERNAL = outlined("#868e96", "#e9ecef", "#495057");
 
 /** The colors of a theme from those of each kind; containers of a type without colors of its own have those of all containers. */
 function palette(p: {
@@ -79,7 +79,7 @@ const PALETTES: Record<Preset, Colors> = {
       queue: outlined("#a61e4d", "#faa2c1", "#212529"),
     },
     component: outlined("#9c36b5", "#eebefa", "#212529"),
-    external: outlined("#868e96", "#e9ecef", "#495057"),
+    external: GREY_EXTERNAL,
     group: outlined("#495057"),
   }),
   // The colors of the sea and what lives in it.
@@ -99,7 +99,7 @@ const PALETTES: Record<Preset, Colors> = {
       queue: outlined("#1c7ed6", "#a5d8ff", "#102a43"),
     },
     component: outlined("#5f3dc4", "#b197fc", "#102a43"),
-    external: outlined("#868e96", "#e9ecef", "#495057"),
+    external: GREY_EXTERNAL,
     group: outlined("#102a43"),
   }),
   // The colors of the evening sky, from red to purple.
@@ -119,7 +119,7 @@ const PALETTES: Record<Preset, Colors> = {
       queue: outlined("#1864ab", "#a5d8ff", "#3b1f1f"),
     },
     component: outlined("#862e9c", "#e599f7", "#3b1f1f"),
-    external: outlined("#868e96", "#e9ecef", "#495057"),
+    external: GREY_EXTERNAL,
     group: outlined("#3b1f1f"),
   }),
   // Greens of leaves and moss, with bark, water and autumn leaves.
@@ -139,7 +139,7 @@ const PALETTES: Record<Preset, Colors> = {
       queue: outlined("#3b5bdb", "#bac8ff", "#1b2e1f"),
     },
     component: outlined("#d9480f", "#ffc078", "#1b2e1f"),
-    external: outlined("#868e96", "#e9ecef", "#495057"),
+    external: GREY_EXTERNAL,
     group: outlined("#1b2e1f"),
   }),
   monochrome: palette({

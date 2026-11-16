@@ -160,8 +160,12 @@ export class Scene {
     return out;
   }
 
-  hasRelationship(diagram: DiagramId, from: string, to: string): boolean {
-    return this.relationships(diagram).some((r) => this.modelId(r.from) === from && this.modelId(r.to) === to);
+  /** Whether a diagram has a relationship between two elements, either way: its direction does not make it another one. */
+  related(diagram: DiagramId, a: string, b: string): boolean {
+    return this.relationships(diagram).some((r) => {
+      const [from, to] = [this.modelId(r.from), this.modelId(r.to)];
+      return (from === a && to === b) || (from === b && to === a);
+    });
   }
 
   /**
@@ -178,7 +182,7 @@ export class Scene {
       if (!a || !b) continue;
       const ma = this.modelId(a)!;
       const mb = this.modelId(b)!;
-      if (ma !== mb && !this.hasRelationship(diagram, ma, mb) && !this.hasRelationship(diagram, mb, ma)) out.push({ diagram, from: a, to: b });
+      if (ma !== mb && !this.related(diagram, ma, mb)) out.push({ diagram, from: a, to: b });
     }
     return out;
   }
@@ -285,30 +289,54 @@ export function endsOf(scene: Scene, arrow: El): [string, string] | null {
   return from && to ? [from, to] : null;
 }
 
+/** Whether two records have the same keys with the same values, in whatever order. */
+const sameRecord = (a: Record<string, string>, b: Record<string, string>): boolean =>
+  Object.keys(a).length === Object.keys(b).length && Object.keys(a).every((k) => Object.prototype.hasOwnProperty.call(b, k) && a[k] === b[k]);
+
 /** How far down a layer is: the system context 0, the layer of a system 1, of a container 2. */
-export const depthOf = (scene: Scene, layer: DiagramId): number => (layer === CONTEXT ? 0 : scene.ancestors(layer).length + 1);
+const depthOf = (scene: Scene, layer: DiagramId): number => (layer === CONTEXT ? 0 : scene.ancestors(layer).length + 1);
+
+/** Whether the ends of a relationship stand for two elements, or anything inside or around them, in that order. */
+function endsStandFor(scene: Scene, [xa, xb]: [string, string], [a, b]: [string, string]): boolean {
+  return (scene.within(a, xa) && scene.within(b, xb)) || (scene.within(xa, a) && scene.within(xb, b));
+}
 
 /**
  * The copies of a relationship on the levels below: the same relationship between the elements standing for its ends
- * there, with the same description, technology and metadata, as copied from it and not edited since. One between the
- * same elements that says something else is another relationship. The levels above, and other layers of its own level,
- * sum up what is below them, so they keep what they say.
+ * there, either way, with the same description, technology and metadata, as copied from it and not edited since. One
+ * between the same elements that says something else is another relationship. The levels above, and other layers of
+ * its own level, sum up what is below them, so they keep what they say.
  */
 export function copiesOf(scene: Scene, arrow: El): El[] {
   const ends = endsOf(scene, arrow);
   const data = relationshipData(arrow.customData);
   if (!ends || !data) return [];
-  const [a, b] = ends;
   const same = (d: C4Relationship) =>
     d.description.trim() === data.description.trim() && (d.technology ?? "").trim() === (data.technology ?? "").trim() &&
-    JSON.stringify(d.metadata ?? {}) === JSON.stringify(data.metadata ?? {});
+    sameRecord(d.metadata ?? {}, data.metadata ?? {});
   const depth = depthOf(scene, scene.diagramOf(arrow));
   return [...scene.byId.values()].filter((x) => {
     const d = x.containerId ? null : relationshipData(x.customData);
     const e = d && x.id !== arrow.id && depthOf(scene, scene.diagramOf(x)) > depth ? endsOf(scene, x) : null;
     if (!d || !e || !same(d)) return false;
-    const [xa, xb] = e;
-    return (scene.within(a, xa) && scene.within(b, xb)) || (scene.within(xa, a) && scene.within(xb, b));
+    return endsStandFor(scene, e, ends) || endsStandFor(scene, [e[1], e[0]], ends);
+  });
+}
+
+/** Whether a copy of a relationship goes the same way as it, rather than the other way. */
+export function sameWay(scene: Scene, arrow: El, copy: El): boolean {
+  const ends = endsOf(scene, arrow);
+  const e = endsOf(scene, copy);
+  return !!ends && !!e && endsStandFor(scene, e, ends);
+}
+
+/** Whether a layer has a relationship between two elements or anything inside them, either way, boundaries included. */
+export function relatedIn(scene: Scene, layer: DiagramId, a: string, b: string): boolean {
+  return scene.elementsIn(layer).some((x) => {
+    const ends = !x.containerId && relationshipData(x.customData) ? endsOf(scene, x) : null;
+    if (!ends) return false;
+    const [f, t] = ends;
+    return (scene.within(f, a) && scene.within(t, b)) || (scene.within(f, b) && scene.within(t, a));
   });
 }
 
@@ -332,7 +360,7 @@ export function relationshipsWithin(scene: Scene, from: string, to: string, exce
 export function relationshipsBelow(scene: Scene, layer: DiagramId, gone: [string, string][]): El[] {
   const out = new Map<string, El>();
   for (const [a, b] of gone) {
-    if (scene.hasRelationship(layer, a, b) || scene.hasRelationship(layer, b, a)) continue;
+    if (scene.related(layer, a, b)) continue;
     for (const r of [...relationshipsWithin(scene, a, b, layer), ...relationshipsWithin(scene, b, a, layer)]) out.set(r.id, r);
   }
   return [...out.values()];

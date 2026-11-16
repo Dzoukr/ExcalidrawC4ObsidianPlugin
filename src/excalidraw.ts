@@ -34,7 +34,6 @@ export type El = {
   opacity?: number;
   locked?: boolean;
   link?: string | null;
-  hasTextLink?: boolean;
   // lines and arrows
   points?: number[][];
   startBinding?: Binding | null;
@@ -50,13 +49,11 @@ export type El = {
   fontSize?: number;
   textAlign?: string;
   verticalAlign?: string;
-  lineHeight?: number;
 };
 
 export interface AppState {
   selectedElementIds?: Record<string, boolean>;
   selectedGroupIds?: Record<string, boolean>;
-  editingGroupId?: string | null; // the group double-clicked into, whose elements are selected one by one
   editingTextElement?: El | null;
   viewModeEnabled?: boolean;
   zoom?: { value: number };
@@ -93,8 +90,6 @@ export interface ExcalidrawAutomate {
   getElement(id: string): El;
   getElements(): El[];
   measureText(text: string): { width: number; height: number };
-  parseText(text: string): Promise<string | undefined>; // the text as shown, with its links parsed
-  selectElementsInView(ids: string[]): void;
   viewZoomToElements(selectElements: boolean, elements: El[], margin?: number): void;
   destroy?(): void;
 }
@@ -117,7 +112,15 @@ export function getEA(view: ExcalidrawView): ExcalidrawAutomate | null {
   return global.getAPI(view);
 }
 
-const randomNonce = () => Math.floor(Math.random() * 2 ** 31);
+/** A random nonce for a new version of an element, which settles which of two edits of the same version wins. */
+export const randomNonce = () => Math.floor(Math.random() * 2 ** 31);
+
+/** The version fields of an element changed: the next version, with a new nonce, updated now. */
+export const nextVersion = (e: El): Pick<El, "version" | "versionNonce" | "updated"> => ({
+  version: (e.version ?? 0) + 1,
+  versionNonce: randomNonce(),
+  updated: Date.now(),
+});
 
 /**
  * Collects element changes and applies them to the scene in one updateScene call,
@@ -129,7 +132,6 @@ export class SceneTx {
   private readonly order: string[];
   private readonly dirty = new Set<string>();
   private readonly added: string[] = [];
-  private changes = 0;
 
   constructor(readonly view: ExcalidrawView) {
     this.api = view.excalidrawAPI!;
@@ -147,28 +149,16 @@ export class SceneTx {
     return [...this.cur.values()].filter((e) => !e.isDeleted);
   }
 
-  /** Counts every change, so a caller can tell whether a step changed anything. */
-  get revision(): number {
-    return this.changes;
-  }
-
   patch(id: string, p: Partial<El>) {
     const e = this.cur.get(id);
     if (!e) return;
     this.cur.set(id, { ...e, ...p });
     this.dirty.add(id);
-    this.changes++;
   }
 
   add(el: El) {
     this.cur.set(el.id, el);
     this.added.push(el.id);
-    this.changes++;
-  }
-
-  /** Position in the z-order, -1 for elements added in this transaction. */
-  indexOf(id: string): number {
-    return this.order.indexOf(id);
   }
 
   /** Adds elements at the given z-order position instead of on top. */
@@ -178,27 +168,28 @@ export class SceneTx {
       this.dirty.add(el.id); // counts as a change on its own
     }
     this.order.splice(index, 0, ...els.map((e) => e.id));
-    this.changes++;
   }
 
   /** Adds the element right behind another one, which may itself be added in this transaction. */
   addBehind(el: El, id: string) {
-    const i = this.order.indexOf(id);
-    if (i >= 0) return this.insert([el], i);
-    this.cur.set(el.id, el);
-    const j = this.added.indexOf(id);
-    this.added.splice(j < 0 ? this.added.length : j, 0, el.id);
-    this.changes++;
+    this.addNextTo(el, id, 0);
   }
 
   /** Adds the element right in front of another one, which may itself be added in this transaction. */
   addInFront(el: El, id: string) {
+    this.addNextTo(el, id, 1);
+  }
+
+  /**
+   * Adds the element next to another one in the z-order: right behind it (`after` 0) or right in front of it (1). Next
+   * to one added in this transaction it goes among the added ones; next to one that is not there, on top.
+   */
+  private addNextTo(el: El, id: string, after: 0 | 1) {
     const i = this.order.indexOf(id);
-    if (i >= 0) return this.insert([el], i + 1);
+    if (i >= 0) return this.insert([el], i + after);
     this.cur.set(el.id, el);
     const j = this.added.indexOf(id);
-    this.added.splice(j < 0 ? this.added.length : j + 1, 0, el.id);
-    this.changes++;
+    this.added.splice(j < 0 ? this.added.length : j + after, 0, el.id);
   }
 
   delete(id: string) {
@@ -211,8 +202,7 @@ export class SceneTx {
 
   commit(captureUpdate: CaptureUpdate = "IMMEDIATELY") {
     if (!this.changed) return;
-    const fresh = (e: El): El =>
-      this.dirty.has(e.id) ? { ...e, version: (e.version ?? 0) + 1, versionNonce: randomNonce(), updated: Date.now() } : e;
+    const fresh = (e: El): El => (this.dirty.has(e.id) ? { ...e, ...nextVersion(e) } : e);
     const elements = this.order.map((id) => fresh(this.cur.get(id)!));
     // Containers before their bound text keeps z-order sane for newly added nodes.
     const added = this.added.map((id) => fresh(this.cur.get(id)!));

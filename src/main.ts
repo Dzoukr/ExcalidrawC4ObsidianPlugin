@@ -1,7 +1,4 @@
-import {
-  App, ColorComponent, ExtraButtonComponent, FuzzyMatch, FuzzySuggestModal, ItemView, Menu, Modal, Notice, Plugin, PluginSettingTab, Setting, SettingDefinitionItem, SettingDefinitionPage,
-  normalizePath, setIcon,
-} from "obsidian";
+import { ItemView, Notice, Plugin } from "obsidian";
 import {
   Selected, SelectedGroup, SelectedItem, SelectedRelationship, addElement, addGroup, addRelationship, canAdd, canEdit, canRelate, deleteBelow, diagramInfo, dissolveGroups, dropBoxes, hasKind, isElement,
   isGroup, isRelationship, ghostAt, itemAt, itemOf, moveBoundary, redrawResized, regroup, restoreBoundary, reverseRelationship, onlyC4Selected, refreshLooks, setDrawingTheme, themeOfDrawing, useDrawingColors, selectNext, selectedElements, selectedEnds,
@@ -10,50 +7,28 @@ import {
 import { Guard, guardLevels, protectStore, refreshCanvas, selectionOf } from "./layertx";
 import { AppState, El, ExcalidrawAPI, ExcalidrawView, VIEW_TYPE_EXCALIDRAW, isExcalidrawView } from "./excalidraw";
 import {
-  Box, C4Element, C4Kind, CONTAINER_TYPES, CUSTOM_PICTURE, Vec, CONTAINER_TYPE_TITLES, ContainerType, Ink, KINDS, Shape, boundaryData, bounds, canBeExternal, cleanMetadata, elementData, groupData, hasTechnology,
-  iconOf, isContainerType, kindTitle, levelOf, shapeDrawing, shapeOf, zoomView, LOOK_KEYS, LOOK_KEY_TITLES, LOOK_PARTS, LOOK_PART_TITLES, Look, LookKey,
-  lookOf, ownLook, KEY, C4Group, GROUP_LOOK_PARTS, groupLookOf, lookPartsOf, ownGroupLook,
+  Box, C4Element, C4Group, C4Kind, C4Relationship, ContainerType, GROUP_LOOK_PARTS, KEY, KINDS, Look, boundaryData, canBeExternal, elementData, groupData, groupLookOf,
+  hasTechnology, iconOf, isContainerType, kindTitle, levelOf, lookOf, ownGroupLook, ownLook, zoomView,
 } from "./model";
-import {
-  CUSTOM_THEME, Colors, Theme, UserTheme, colorsOf, copyColors, isPreset, mergeColors, newThemeId, parseThemes, setNewDrawingTheme, setUserThemes,
-  themeName, themeOptions, themeSwatches, themesToJson, uniqueName, validTheme,
-} from "./themes";
-import { C4Panel, PANEL_POSITIONS, PanelPosition, isPanelPosition } from "./panel";
+import { setNewDrawingTheme, setUserThemes } from "./themes";
+import { C4Panel } from "./panel";
 import { MODE, MODE_KEY, Owner, isAlone, ownerOf, register } from "./mode";
 import { PLAIN, offer, withdraw } from "./chooser";
 import { Highlight } from "./highlight";
-import { iconIds, iconName } from "./icons";
-import { DEFAULT_SHORTCUTS, SHORTCUT_ACTIONS, SHORTCUT_NAMES, ShortcutAction, Shortcuts, actionOf, isMove, loadShortcuts, shortcutOf } from "./keys";
+import { ShortcutAction, actionOf, isMove, shortcutOf } from "./keys";
+import { C4SettingTab, DEFAULT_SETTINGS, Settings, SettingsHost, loadSettings } from "./settings";
+import { Field, FormModal, Verb, elementFields, externalToggle, iconPicker, lookPickers, reverseButton, submitText, typeToggle } from "./forms";
+import { ThemeModal, showThemeMenu } from "./themeui";
 
 const NO_EXCALIDRAW = "The Excalidraw plugin's scripting API is not available.";
 
-interface Settings {
-  showPanel: boolean;
-  panelPosition: PanelPosition;
-  shortcuts: Shortcuts;
-  theme: Theme; // of new drawings
-  themes: UserTheme[]; // the user's own, after the built-in ones
-  askKind: boolean; // ask what a drawing nobody's yet is for, even with no other plugin drawing its own kind of diagram
+/** Tells the user when something was not done, the Excalidraw plugin's scripting API not being available. */
+function reportIfFailed(done: boolean) {
+  if (!done) new Notice(NO_EXCALIDRAW);
 }
 
-const DEFAULT_SETTINGS: Settings = { showPanel: true, panelPosition: "right", shortcuts: DEFAULT_SHORTCUTS, theme: "classic", themes: [], askKind: false };
-
-/**
- * The themes from saved settings, their colors over the defaults. The colors the settings had before themes, if any
- * were changed, become the Custom theme.
- */
-function loadThemes(saved: (Partial<Settings> & { looks?: unknown }) | null): UserTheme[] {
-  const out: UserTheme[] = [];
-  const looks = saved?.looks;
-  const list: unknown[] = Array.isArray(saved?.themes)
-    ? saved.themes
-    : looks && typeof looks === "object" && Object.keys(looks).length ? [{ id: CUSTOM_THEME, name: "Custom", colors: looks }] : [];
-  for (const t of list as Partial<UserTheme>[]) {
-    if (!t || typeof t.id !== "string" || !t.id || isPreset(t.id) || out.some((x) => x.id === t.id)) continue;
-    out.push({ id: t.id, name: typeof t.name === "string" && t.name.trim() ? t.name : "Theme", colors: mergeColors(t.colors) });
-  }
-  return out;
-}
+/** A drawing whose Excalidraw component has mounted. */
+type MountedView = ExcalidrawView & { excalidrawAPI: ExcalidrawAPI };
 
 interface ViewState {
   view: ExcalidrawView;
@@ -63,6 +38,7 @@ interface ViewState {
   unsubscribe?: () => void;
   raf: number;
   highlightRaf: number;
+  canvasRaf: number;
   selection: unknown; // the selection the panel shows, to refresh it only when the selection changes
   viewMode: boolean | undefined;
   drag?: Map<string, Box>; // where the C4 boxes and groups were when the pointer went down on the drawing, until it goes up
@@ -77,7 +53,7 @@ interface ViewState {
 
 const ATTACH_RETRIES = 50;
 
-export default class ExcalidrawC4Plugin extends Plugin {
+export default class ExcalidrawC4Plugin extends Plugin implements SettingsHost {
   settings: Settings = DEFAULT_SETTINGS;
   private states = new Map<ExcalidrawView, ViewState>();
   private retries = new WeakMap<ExcalidrawView, number>();
@@ -86,14 +62,7 @@ export default class ExcalidrawC4Plugin extends Plugin {
   private paused = false;
 
   async onload() {
-    const saved = (await this.loadData()) as Partial<Settings> | null;
-    this.settings = { ...DEFAULT_SETTINGS, ...saved, shortcuts: loadShortcuts(saved?.shortcuts) };
-    if (!isPanelPosition(this.settings.panelPosition)) this.settings.panelPosition = DEFAULT_SETTINGS.panelPosition;
-    this.settings.askKind = this.settings.askKind === true;
-    this.settings.themes = loadThemes(saved);
-    const migrated = !Array.isArray(saved?.themes) && this.settings.themes.some((t) => t.id === CUSTOM_THEME);
-    this.settings.theme = validTheme(migrated ? CUSTOM_THEME : this.settings.theme, this.settings.themes);
-    delete (this.settings as { looks?: unknown }).looks;
+    this.settings = loadSettings((await this.loadData()) as Partial<Settings> | null);
     this.applyThemes();
     this.addSettingTab(new C4SettingTab(this.app, this));
 
@@ -104,8 +73,7 @@ export default class ExcalidrawC4Plugin extends Plugin {
         if (s.view.file !== file) continue;
         s.claimed = false;
         s.plain = false;
-        this.refreshPanel(s);
-        this.refreshHighlight(s);
+        this.refresh(s);
       }
     }));
     this.registerEvent(this.app.workspace.on("layout-change", () => this.syncViews()));
@@ -145,8 +113,8 @@ export default class ExcalidrawC4Plugin extends Plugin {
       id: "use-for-c4",
       name: "Use this drawing for C4 diagrams",
       checkCallback: (checking) => {
-        const view = this.app.workspace.getActiveViewOfType(ItemView);
-        if (!isExcalidrawView(view) || !view.excalidrawAPI || this.ownerOfView(view) === "mine") return false;
+        const view = this.activeView();
+        if (!view || this.isMine(view)) return false;
         if (!checking) void this.claim(view);
         return true;
       },
@@ -155,8 +123,8 @@ export default class ExcalidrawC4Plugin extends Plugin {
       id: "keep-plain",
       name: "Keep this drawing plain Excalidraw",
       checkCallback: (checking) => {
-        const view = this.app.workspace.getActiveViewOfType(ItemView);
-        if (!isExcalidrawView(view) || !view.excalidrawAPI || this.kindOf(view) === PLAIN) return false;
+        const view = this.activeView();
+        if (!view || this.kindOf(view) === PLAIN) return false;
         if (!checking) void this.keepPlain(view);
         return true;
       },
@@ -193,6 +161,12 @@ export default class ExcalidrawC4Plugin extends Plugin {
     });
   }
 
+  /** The drawing in the active tab, once Excalidraw has mounted in it. */
+  private activeView(): MountedView | null {
+    const view = this.app.workspace.getActiveViewOfType(ItemView);
+    return isExcalidrawView(view) && view.excalidrawAPI ? (view as MountedView) : null;
+  }
+
   /** Whom the drawing belongs to: C4, another plugin drawing its own kind of diagram, or none yet. */
   private ownerOfView(view: ExcalidrawView): Owner {
     const s = this.states.get(view);
@@ -214,8 +188,7 @@ export default class ExcalidrawC4Plugin extends Plugin {
     if (s) {
       s.claimed = false;
       s.plain = true;
-      this.refreshPanel(s);
-      this.refreshHighlight(s);
+      this.refresh(s);
     }
     await this.writeKind(view, PLAIN);
   }
@@ -266,16 +239,13 @@ export default class ExcalidrawC4Plugin extends Plugin {
   /** Leaves keys and double-clicks to Excalidraw, in every drawing, or takes them back. */
   private togglePause() {
     this.paused = !this.paused;
-    for (const s of this.states.values()) {
-      this.refreshPanel(s);
-      this.refreshHighlight(s);
-    }
+    for (const s of this.states.values()) this.refresh(s);
   }
 
   /** The drawing in the active tab, while it is being edited rather than only viewed. */
   private editedView(): ExcalidrawView | null {
-    const view = this.app.workspace.getActiveViewOfType(ItemView);
-    if (!isExcalidrawView(view) || !view.excalidrawAPI) return null;
+    const view = this.activeView();
+    if (!view) return null;
     const s = view.excalidrawAPI.getAppState();
     // Another plugin's drawing, or nobody's yet, keeps its keys and double-clicks for Excalidraw.
     return s.viewModeEnabled || s.editingTextElement || !this.isMine(view) ? null : view;
@@ -437,8 +407,9 @@ export default class ExcalidrawC4Plugin extends Plugin {
    * Marks the boxes that are where they do not belong and fits the ghosts around what is drawn, whenever the elements
    * change and nothing is being dragged.
    */
-  private checkCanvas(s: ViewState, els = s.api.getSceneElements()) {
+  private checkCanvas(s: ViewState) {
     if (s.drag || !this.isMine(s.view)) return;
+    const els = s.api.getSceneElements();
     this.keepKind(s, els);
     const state = s.api.getAppState();
     if (state.viewModeEnabled || state.editingTextElement) return;
@@ -463,16 +434,16 @@ export default class ExcalidrawC4Plugin extends Plugin {
 
   private reverse(view: ExcalidrawView) {
     const r = selectedRelationship(view);
-    if (r && !reverseRelationship(view, r.el.id)) new Notice(NO_EXCALIDRAW);
+    if (r) reportIfFailed(reverseRelationship(view, r.el.id));
   }
 
   private zoomIn(view: ExcalidrawView, item?: Selected) {
-    if (!zoomIn(view, item)) new Notice(NO_EXCALIDRAW);
+    reportIfFailed(zoomIn(view, item));
     this.refreshView(view);
   }
 
   private zoomOut(view: ExcalidrawView) {
-    if (!zoomOut(view)) new Notice(NO_EXCALIDRAW);
+    reportIfFailed(zoomOut(view));
     this.refreshView(view);
   }
 
@@ -556,7 +527,7 @@ export default class ExcalidrawC4Plugin extends Plugin {
       togglePause: () => this.togglePause(),
     });
     const highlight = new Highlight();
-    const s: ViewState = { view, api, panel, highlight, raf: 0, highlightRaf: 0, selection: null, viewMode: undefined, revision: NaN };
+    const s: ViewState = { view, api, panel, highlight, raf: 0, highlightRaf: 0, canvasRaf: 0, selection: null, viewMode: undefined, revision: NaN };
     panel.mount(view.contentEl);
     highlight.mount(view.contentEl);
     s.unsubscribe = api.onChange?.((els, appState) => this.onSceneChange(s, els, appState));
@@ -572,6 +543,7 @@ export default class ExcalidrawC4Plugin extends Plugin {
     withdraw(s.view.contentEl, MODE);
     if (s.raf) window.cancelAnimationFrame(s.raf);
     if (s.highlightRaf) window.cancelAnimationFrame(s.highlightRaf);
+    if (s.canvasRaf) window.cancelAnimationFrame(s.canvasRaf);
     s.panel.destroy();
     s.highlight.destroy();
   }
@@ -581,7 +553,13 @@ export default class ExcalidrawC4Plugin extends Plugin {
    * of misplaced boxes only the elements.
    */
   private onSceneChange(s: ViewState, els: readonly El[], appState: AppState) {
-    if (!s.drag && revisionOf(els) !== s.revision) window.requestAnimationFrame(() => this.checkCanvas(s));
+    if (!s.drag && !s.canvasRaf && revisionOf(els) !== s.revision) {
+      s.canvasRaf = window.requestAnimationFrame(() => {
+        s.canvasRaf = 0;
+        // Not once the drawing is closed, or attached again with another state.
+        if (this.states.get(s.view) === s) this.checkCanvas(s);
+      });
+    }
     // The highlight follows the selection, its elements, and the view as it scrolls and zooms.
     if (!s.highlightRaf) {
       s.highlightRaf = window.requestAnimationFrame(() => {
@@ -598,6 +576,12 @@ export default class ExcalidrawC4Plugin extends Plugin {
         this.refreshPanel(s);
       });
     }
+  }
+
+  /** Shows the panel and the highlight as the drawing, its owner and the pause are now. */
+  private refresh(s: ViewState) {
+    this.refreshPanel(s);
+    this.refreshHighlight(s);
   }
 
   private refreshHighlight(s: ViewState) {
@@ -631,8 +615,8 @@ export default class ExcalidrawC4Plugin extends Plugin {
    * not another plugin's. On a drawing nobody's yet, it takes the drawing over for C4.
    */
   private withView(checking: boolean, run: (view: ExcalidrawView) => void, applies?: (view: ExcalidrawView) => boolean): boolean {
-    const view = this.app.workspace.getActiveViewOfType(ItemView);
-    if (!isExcalidrawView(view) || !view.excalidrawAPI || (applies && !applies(view))) return false;
+    const view = this.activeView();
+    if (!view || (applies && !applies(view))) return false;
     const owner = this.ownerOfView(view);
     if (owner === "other") return false;
     if (!checking) {
@@ -686,16 +670,16 @@ export default class ExcalidrawC4Plugin extends Plugin {
   }
 
   /** The form of a group, the same for adding and editing it: its name and its own colors. */
-  private groupForm(view: ExcalidrawView, verb: "Add" | "Edit", data: C4Group, save: (name: string, look?: Partial<Look>) => boolean) {
+  private groupForm(view: ExcalidrawView, verb: Verb, data: C4Group, save: (name: string, look?: Partial<Look>) => boolean) {
     useDrawingColors(view); // the colors the form shows
     let look: Partial<Look> = { ...data.look };
     const fields: Field[] = [{ key: "name", name: "Name", value: data.name, placeholder: "E.g. Customer service" }];
     const modal = new FormModal(this.app, `${verb} group`, fields, (v) => {
       useDrawingColors(view); // for its own colors, those that differ from the colors of groups in the drawing's theme
-      if (!save(v.name ?? "", ownGroupLook(look))) new Notice(NO_EXCALIDRAW);
-    }, verb === "Edit" ? "Save" : "Add");
+      reportIfFailed(save(v.name ?? "", ownGroupLook(look)));
+    }, submitText(verb));
     modal.extras.push(lookPickers(
-      "Colors", "",
+      "Colors",
       () => groupLookOf({ look }),
       (part, value) => (look = { ...look, [part]: value }),
       () => (look = {}),
@@ -706,25 +690,12 @@ export default class ExcalidrawC4Plugin extends Plugin {
 
   /** Lets the user pick the drawing's theme. */
   private chooseTheme(view: ExcalidrawView) {
-    new ThemeModal(this.app, themeOfDrawing(view), (t) => {
-      if (!setDrawingTheme(view, t)) new Notice(NO_EXCALIDRAW);
-    }).open();
+    new ThemeModal(this.app, themeOfDrawing(view), (t) => reportIfFailed(setDrawingTheme(view, t))).open();
   }
 
   /** The themes as a menu at the panel's button, the drawing's one checked. */
   private themeMenu(view: ExcalidrawView, at: HTMLElement) {
-    const menu = new Menu();
-    menu.addItem((i) => i.setTitle("Theme of the drawing").setIsLabel(true));
-    const current = themeOfDrawing(view);
-    const options = themeOptions();
-    options.forEach((t, i) => {
-      if (t.user && !options[i - 1]?.user) menu.addSeparator();
-      menu.addItem((item) => item.setTitle(themeTitle(t.id)).setChecked(t.id === current).onClick(() => {
-        if (!setDrawingTheme(view, t.id)) new Notice(NO_EXCALIDRAW);
-      }));
-    });
-    const r = at.getBoundingClientRect();
-    menu.showAtPosition({ x: r.left, y: r.bottom }, at.doc);
+    showThemeMenu(at, "Theme of the drawing", (t) => reportIfFailed(setDrawingTheme(view, t.id)), themeOfDrawing(view));
   }
 
   private promptEditElement(view: ExcalidrawView, { el, data }: Selected) {
@@ -732,7 +703,7 @@ export default class ExcalidrawC4Plugin extends Plugin {
   }
 
   /** The form of an element, the same for adding and editing it; `save` gets the element as the form leaves it. */
-  private elementForm(view: ExcalidrawView, verb: "Add" | "Edit", data: C4Element, save: (data: C4Element) => boolean) {
+  private elementForm(view: ExcalidrawView, verb: Verb, data: C4Element, save: (data: C4Element) => boolean) {
     useDrawingColors(view); // the colors the form shows
     let external = !!data.external;
     let type: ContainerType = isContainerType(data.type) ? data.type : "generic";
@@ -740,23 +711,20 @@ export default class ExcalidrawC4Plugin extends Plugin {
     const heading = () => `${verb} ${kindTitle(data.kind, external).toLowerCase()}`;
     const values = { name: data.name, technology: data.technology ?? "", description: data.description ?? "" };
     const fields = elementFields(data.kind, external).map((f) => ({ ...f, value: values[f.key as keyof typeof values] }));
-    const rows: [string, string][] = Object.entries(data.metadata ?? {});
     let look: Partial<Look> = { ...data.look };
     const typed = () => ({ kind: data.kind, ...(data.kind === "container" ? { type } : {}), external });
     const modal = new FormModal(this.app, heading(), fields, (v) => {
       const technology = hasTechnology(data.kind) ? v.technology : undefined;
-      const metadata = cleanMetadata(rows);
       useDrawingColors(view); // for its own colors, those that differ from its type's in the drawing's theme
       const element: C4Element = {
-        ...data, ...typed(), icon, name: v.name ?? "", technology, description: v.description, metadata, look: ownLook(typed(), look),
+        ...data, ...typed(), icon, name: v.name ?? "", technology, description: v.description, metadata: modal.metadata, look: ownLook(typed(), look),
       };
       // Only a custom container has an icon.
       if (!iconOf(element)) delete element.icon;
-      const saved = save(element);
-      if (!saved) new Notice(NO_EXCALIDRAW);
-    }, verb === "Edit" ? "Save" : "Add");
+      reportIfFailed(save(element));
+    }, submitText(verb));
     const colors = lookPickers(
-      "Colors", "",
+      "Colors",
       () => lookOf({ ...typed(), look }),
       (part, value) => (look = { ...look, [part]: value }),
       () => (look = {}),
@@ -780,15 +748,11 @@ export default class ExcalidrawC4Plugin extends Plugin {
       colors.refresh();
     }));
     modal.extras.push(colors.render);
-    modal.extras.push(metadataEditor(rows, () => modal.submit()));
+    modal.editMetadata(data.metadata);
     modal.open();
   }
 
   private promptEditRelationship(view: ExcalidrawView, { el, data }: SelectedRelationship) {
-    const fields: Field[] = [
-      { key: "description", name: "Description", value: data.description },
-      { key: "technology", name: "Technology", value: data.technology ?? "", placeholder: "E.g. JSON/HTTPS" },
-    ];
     const els = view.excalidrawAPI?.getSceneElements() ?? [];
     const nameOf = (id?: string) => {
       const end = els.find((e) => e.id === id);
@@ -797,21 +761,8 @@ export default class ExcalidrawC4Plugin extends Plugin {
       const label = scope ? els.find((e) => e.type === "text" && boundaryData(e.customData)?.boundary === scope)?.text?.split("\n")[0] : undefined;
       return elementData(end?.customData)?.name || label || "Unnamed";
     };
-    const ends = [nameOf(el.startBinding?.elementId), nameOf(el.endBinding?.elementId)];
-    let reversed = false;
-    const rows: [string, string][] = Object.entries(data.metadata ?? {});
-    const title = () => (reversed ? [...ends].reverse() : ends).join(" → ");
-    const modal = new FormModal(this.app, title(), fields, (v) => {
-      const metadata = cleanMetadata(rows);
-      const updated = updateRelationship(view, el.id, { ...data, description: v.description ?? "", technology: v.technology, metadata }, reversed);
-      if (!updated) new Notice(NO_EXCALIDRAW);
-    }, "Save");
-    modal.headerButton = reverseButton(() => {
-      reversed = !reversed;
-      modal.setTitle(title());
-    });
-    modal.extras.push(metadataEditor(rows, () => modal.submit()));
-    modal.open();
+    const ends: [string, string] = [nameOf(el.startBinding?.elementId), nameOf(el.endBinding?.elementId)];
+    this.relationshipForm("Edit", ends, data, (updated, reversed) => updateRelationship(view, el.id, updated, reversed));
   }
 
   private promptRelationship(view: ExcalidrawView) {
@@ -822,250 +773,35 @@ export default class ExcalidrawC4Plugin extends Plugin {
       new Notice("An element has no relationship with what it is in.");
       return;
     }
-    let reversed = false;
-    const ends = (): [Selected, Selected] => (reversed ? [b, a] : [a, b]);
-    const title = () => {
-      const [from, to] = ends();
-      return `${from.data.name || "Unnamed"} → ${to.data.name || "Unnamed"}`;
-    };
-    const fields: Field[] = [
-      { key: "description", name: "Description", value: "Uses" },
-      { key: "technology", name: "Technology", placeholder: "E.g. JSON/HTTPS" },
-    ];
-    const rows: [string, string][] = [];
-    const modal = new FormModal(this.app, title(), fields, (v) => {
-      const [from, to] = ends();
-      const metadata = cleanMetadata(rows);
-      const added = addRelationship(view, from.el, to.el, { relationship: true, description: v.description ?? "", technology: v.technology, metadata });
-      if (!added) new Notice(NO_EXCALIDRAW);
+    const ends: [string, string] = [a.data.name || "Unnamed", b.data.name || "Unnamed"];
+    this.relationshipForm("Add", ends, { relationship: true, description: "Uses" }, (added, reversed) => {
+      const [from, to] = reversed ? [b, a] : [a, b];
+      return addRelationship(view, from.el, to.el, added);
     });
+  }
+
+  /**
+   * The form of a relationship, the same for adding and editing it, its title the names of its ends; `save` gets the
+   * relationship as the form leaves it, and whether it was turned the other way round.
+   */
+  private relationshipForm(verb: Verb, ends: [string, string], data: C4Relationship, save: (data: C4Relationship, reversed: boolean) => boolean) {
+    const fields: Field[] = [
+      { key: "description", name: "Description", value: data.description },
+      { key: "technology", name: "Technology", value: data.technology ?? "", placeholder: "E.g. JSON/HTTPS" },
+    ];
+    let reversed = false;
+    const title = () => (reversed ? [...ends].reverse() : ends).join(" → ");
+    const modal = new FormModal(this.app, title(), fields, (v) => {
+      reportIfFailed(save({ ...data, description: v.description ?? "", technology: v.technology, metadata: modal.metadata }, reversed));
+    }, submitText(verb));
     modal.headerButton = reverseButton(() => {
       reversed = !reversed;
       modal.setTitle(title());
     });
-    modal.extras.push(metadataEditor(rows, () => modal.submit()));
+    modal.editMetadata(data.metadata);
     modal.open();
   }
 }
-
-interface Field {
-  key: string;
-  name: string;
-  value?: string;
-  placeholder?: string;
-  multiline?: boolean;
-}
-
-function elementFields(kind: C4Kind, external: boolean): Field[] {
-  const fields: Field[] = [{ key: "name", name: "Name", placeholder: kindTitle(kind, external) }];
-  if (hasTechnology(kind)) fields.push({ key: "technology", name: "Technology", placeholder: "E.g. ASP.NET, Spring Boot, PostgreSQL" });
-  fields.push({ key: "description", name: "Description", multiline: true });
-  return fields;
-}
-
-/** A choice in a row of buttons with pictures: what it stands for, its name, and the shape pictured, with its icon. */
-interface PictureOption<T extends string> {
-  value: T;
-  title: string;
-  shape: Shape;
-  icon?: Vec[][];
-}
-
-/**
- * A form setting choosing one of a few options: a row of buttons, each with a picture of a shape, one of them pressed.
- * The arrow keys move along the row.
- */
-const pictureToggle = <T extends string>(name: string, options: PictureOption<T>[], get: () => T, set: (value: T) => void) => (el: HTMLElement) => {
-  const setting = new Setting(el).setName(name).setClass("c4-field").setClass("c4-type");
-  const row = setting.controlEl.createDiv({ cls: "c4-type-toggle", attr: { role: "radiogroup", "aria-label": name } });
-  const buttons = options.map((o) => {
-    const b = row.createEl("button", { cls: "c4-type-option", attr: { type: "button", role: "radio", "aria-label": o.title } });
-    shapePicture(b, o.shape, o.icon);
-    b.createSpan({ cls: "c4-type-name", text: o.title });
-    return b;
-  });
-  const show = () => {
-    options.forEach((o, i) => {
-      const on = o.value === get();
-      buttons[i].toggleClass("is-active", on);
-      buttons[i].setAttr("aria-checked", String(on));
-      buttons[i].tabIndex = on ? 0 : -1;
-    });
-  };
-  const choose = (i: number) => {
-    set(options[i].value);
-    show();
-  };
-  buttons.forEach((b, i) => {
-    b.addEventListener("click", () => choose(i));
-    b.addEventListener("keydown", (e) => {
-      const step = e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 0;
-      if (!step) return;
-      e.preventDefault();
-      const next = (i + step + buttons.length) % buttons.length;
-      choose(next);
-      buttons[next].focus();
-    });
-  });
-  show();
-};
-
-/** The form setting choosing what a container is, which gives its box its shape. */
-const typeToggle = (get: () => ContainerType, set: (type: ContainerType) => void) =>
-  pictureToggle("Type", CONTAINER_TYPES.map((t) => ({
-    value: t,
-    title: CONTAINER_TYPE_TITLES[t],
-    // A custom container can have any icon: its picture has one standing for them all.
-    ...(t === "custom" ? { shape: "icon" as const, icon: CUSTOM_PICTURE } : { shape: shapeOf({ kind: "container", type: t }) }),
-  })), get, set);
-
-/**
- * The form setting picking a custom container's icon, drawn in the top left corner of its box: a button showing the
- * icon, which opens the icons to search, and one to take it away. `shown` gets the setting, to show only for custom
- * containers.
- */
-const iconPicker = (app: App, get: () => string | undefined, set: (icon: string | undefined) => void, shown: (el: HTMLElement) => void) => (el: HTMLElement) => {
-  const setting = new Setting(el).setName("Icon").setClass("c4-field");
-  const pick = setting.controlEl.createEl("button", { cls: "c4-icon-pick", attr: { type: "button" } });
-  let clear: ExtraButtonComponent | undefined;
-  const show = () => {
-    const id = get();
-    pick.empty();
-    if (id) {
-      setIcon(pick.createSpan({ cls: "c4-icon-glyph" }), id);
-      pick.createSpan({ text: iconName(id) });
-    } else pick.createSpan({ cls: "c4-icon-none", text: "Choose an icon" });
-    clear?.extraSettingsEl.toggle(!!id);
-  };
-  pick.addEventListener("click", () => new IconModal(app, (id) => {
-    set(id);
-    show();
-  }).open());
-  setting.addExtraButton((b) => {
-    clear = b;
-    b.setIcon("x").setTooltip("No icon").onClick(() => {
-      set(undefined);
-      show();
-    });
-  });
-  show();
-  shown(setting.settingEl);
-};
-
-/** The colors of a picture of a shape: the current text color for its lines, the background for its fill. */
-const PICTURE_INK: Record<Ink, string> = { outline: "currentColor", detail: "currentColor", body: "var(--background-primary)", none: "none" };
-
-/** Draws a small picture of a shape into an element, from the same parts the shape is drawn with on the canvas. */
-function shapePicture(el: HTMLElement, shape: Shape, icon: Vec[][] = []) {
-  // A small box, so the details of the shapes show; a person's head is as large as on the canvas, so a person's box is too.
-  const parts = shapeDrawing(shape, shape === "person" ? { x: 0, y: 0, width: 240, height: 150 } : { x: 0, y: 0, width: 100, height: 64 }, icon);
-  const frame = bounds(parts.map((p) => p.box ?? bounds((p.points ?? []).map((v) => ({ ...v, width: 0, height: 0 })))!), 8)!;
-  const svg = el.createSvg("svg", {
-    cls: "c4-type-picture",
-    attr: { viewBox: `${frame.x} ${frame.y} ${frame.width} ${frame.height}`, "aria-hidden": "true" },
-  });
-  for (const p of parts) {
-    const attr = {
-      stroke: PICTURE_INK[p.stroke], fill: PICTURE_INK[p.fill], "stroke-width": 1.5, "vector-effect": "non-scaling-stroke", "stroke-linejoin": "round",
-    };
-    if (p.type === "line") {
-      const pts = p.points ?? [];
-      const closed = pts.length > 2 && pts[0].x === pts[pts.length - 1].x && pts[0].y === pts[pts.length - 1].y;
-      svg.createSvg(closed ? "polygon" : "polyline", { attr: { ...attr, points: pts.map((v) => `${v.x},${v.y}`).join(" ") } });
-    } else if (p.box && p.type === "ellipse") {
-      const b = p.box;
-      svg.createSvg("ellipse", { attr: { ...attr, cx: b.x + b.width / 2, cy: b.y + b.height / 2, rx: b.width / 2, ry: b.height / 2 } });
-    } else if (p.box) {
-      const b = p.box;
-      const r = Math.min(p.round ?? 0, Math.min(b.width, b.height) / 4);
-      svg.createSvg("rect", { attr: { ...attr, x: b.x, y: b.y, width: b.width, height: b.height, rx: r } });
-    }
-  }
-}
-
-/**
- * Color pickers for the outline, fill and text of an element or a type of element (or the ones of them given), each
- * named, and a button resetting them to their defaults. `render` adds them to a form as a setting of their own; `into`
- * to a given setting.
- */
-function lookPickers(
-  name: string, desc: string, get: () => Look, set: (part: keyof Look, value: string) => void, reset: () => void,
-  parts: readonly (keyof Look)[] = LOOK_PARTS,
-) {
-  const pickers: Partial<Record<keyof Look, ColorComponent>> = {};
-  const refresh = () => {
-    const look = get();
-    for (const p of parts) pickers[p]?.setValue(look[p]);
-  };
-  const into = (setting: Setting) => {
-    setting.setClass("c4-look");
-    for (const p of parts) {
-      const field = setting.controlEl.createEl("label", { cls: "c4-look-color" });
-      field.createSpan({ text: LOOK_PART_TITLES[p] });
-      pickers[p] = new ColorComponent(field).setValue(get()[p]).onChange((v) => set(p, v));
-    }
-    setting.addExtraButton((x) => x.setIcon("rotate-ccw").setTooltip("Reset").onClick(() => {
-      reset();
-      refresh();
-    }));
-  };
-  const render = (el: HTMLElement) => into(new Setting(el).setName(name).setDesc(desc).setClass("c4-field"));
-  return { into, render, refresh };
-}
-
-/** The form setting that makes an element external: outside the system being described, drawn in grey. */
-const externalToggle = (get: () => boolean, set: (on: boolean) => void) => (el: HTMLElement) => {
-  new Setting(el)
-    .setName("External")
-    .setDesc("Outside the system being described.")
-    .addToggle((t) => t.setValue(get()).onChange(set));
-};
-
-/**
- * The form's metadata of an element or relationship, as key: value rows next to its name like the other fields, edited in place: a
- * row is added with the button below them and removed with its own. Enter submits the form.
- */
-const metadataEditor = (rows: [string, string][], submit: () => void) => (el: HTMLElement) => {
-  const setting = new Setting(el).setName("Metadata").setClass("c4-field").setClass("c4-metadata");
-  const list = setting.controlEl.createDiv({ cls: "c4-metadata-rows" });
-  const render = (focus?: number) => {
-    list.empty();
-    rows.forEach((row, i) => {
-      const line = list.createDiv({ cls: "c4-metadata-row" });
-      const input = (part: 0 | 1, placeholder: string) => {
-        const field = line.createEl("input", { type: "text", cls: `c4-metadata-${part ? "value" : "key"}`, attr: { placeholder } });
-        field.value = row[part];
-        field.addEventListener("input", () => (row[part] = field.value));
-        field.addEventListener("keydown", (e) => {
-          if (e.key !== "Enter" || e.isComposing) return;
-          e.preventDefault();
-          submit();
-        });
-        return field;
-      };
-      const key = input(0, "Key");
-      line.createSpan({ cls: "c4-metadata-colon", text: ":" });
-      input(1, "Value");
-      const remove = line.createDiv({ cls: "clickable-icon", attr: { "aria-label": "Remove", role: "button" } });
-      setIcon(remove, "x");
-      remove.addEventListener("click", () => {
-        rows.splice(i, 1);
-        render();
-      });
-      if (i === focus) key.focus();
-    });
-  };
-  render();
-  setting.addButton((b) =>
-    b.setIcon("plus").setButtonText("Add").onClick(() => {
-      rows.push(["", ""]);
-      render(rows.length - 1);
-    }),
-  );
-};
-
-/** The form's button that turns a relationship the other way round; the form's title shows which way it goes. */
-const reverseButton = (flip: () => void): HeaderButton => ({ icon: "arrow-left-right", label: "Reverse direction", onClick: flip });
 
 /** Whether a drawing has anything of C4 in it: elements, their layers or ghosts. */
 const hasC4 = (els: readonly El[]): boolean => els.some((e) => !e.isDeleted && !!e.customData?.[KEY]);
@@ -1099,500 +835,4 @@ function editableItem(view: ExcalidrawView): SelectedItem | null {
 function selectedPair(view: ExcalidrawView): [Selected, Selected] | null {
   const [a, b, ...rest] = selectedEnds(view);
   return a && b && !rest.length && canRelate(view, a, b) ? [a, b] : null;
-}
-
-class C4SettingTab extends PluginSettingTab {
-  constructor(app: App, private readonly plugin: ExcalidrawC4Plugin) {
-    super(app, plugin);
-  }
-
-  getControlValue(key: string): unknown {
-    return this.plugin.settings[key as keyof Settings];
-  }
-
-  async setControlValue(key: string, value: unknown) {
-    const settings = this.plugin.settings;
-    if (key === "showPanel") settings.showPanel = !!value;
-    else if (key === "panelPosition" && isPanelPosition(value)) settings.panelPosition = value;
-    else if (key === "askKind") settings.askKind = !!value;
-    else if (key === "theme") {
-      settings.theme = validTheme(value, settings.themes);
-      return this.plugin.saveThemes();
-    }
-    await this.plugin.saveSettings();
-  }
-
-  getSettingDefinitions(): SettingDefinitionItem[] {
-    return [
-      ...this.general(),
-      {
-        name: "Ask what a new drawing is for",
-        desc: "On a drawing without C4 elements that is not yet anybody's, offer C4 diagrams or plain Excalidraw instead of taking it over. With another plugin drawing its own kind of diagram enabled, the plugins always ask.",
-        control: { type: "toggle", key: "askKind" },
-      },
-      {
-        name: "Theme of new drawings",
-        desc: "The colors of a drawing: a built-in theme or one of your own. Each drawing keeps its own, changed from the panel's theme menu or the command palette.",
-        control: { type: "dropdown", key: "theme", options: Object.fromEntries(themeOptions().map((t) => [t.id, t.name])) },
-      },
-      {
-        type: "page",
-        name: "Themes",
-        desc: "Your own themes, which the theme menu offers after the built-in ones. Add, edit, import and export them.",
-        displayValue: () => String(this.plugin.settings.themes.length),
-        items: [this.themeList(), this.themeTransfer()],
-      },
-      {
-        type: "group",
-        heading: "Keyboard shortcuts",
-        items: SHORTCUT_ACTIONS.map((a) => ({ ...SHORTCUT_NAMES[a], render: (setting: Setting) => this.shortcutSetting(setting, a) })),
-      },
-    ];
-  }
-
-  /**
-   * A shortcut's setting: a button showing its key, which records the next key pressed with its modifiers (Escape
-   * cancels), and buttons to turn it off and to restore its default.
-   */
-  private shortcutSetting(setting: Setting, action: ShortcutAction) {
-    const shortcuts = this.plugin.settings.shortcuts;
-    const save = async (key: string) => {
-      shortcuts[action] = key;
-      await this.plugin.saveSettings();
-    };
-    let stop: (() => void) | undefined;
-    setting.addButton((b) => {
-      const show = () => b.setButtonText(shortcuts[action] || "None");
-      show();
-      b.onClick(() => {
-        stop?.();
-        b.setButtonText("Press a key…");
-        const record = (e: KeyboardEvent) => {
-          const key = shortcutOf(e);
-          if (!key) return; // a modifier alone: wait for the key
-          e.preventDefault();
-          e.stopImmediatePropagation();
-          stop?.();
-          if (key !== "Escape") void save(key).then(show);
-          else show();
-        };
-        window.addEventListener("keydown", record, { capture: true });
-        stop = () => {
-          window.removeEventListener("keydown", record, { capture: true });
-          stop = undefined;
-        };
-      });
-      setting.addExtraButton((x) =>
-        x.setIcon("x").setTooltip("Turn off").onClick(() => {
-          stop?.();
-          void save("").then(show);
-        }),
-      );
-      setting.addExtraButton((x) =>
-        x.setIcon("rotate-ccw").setTooltip(`Restore default (${DEFAULT_SHORTCUTS[action]})`).onClick(() => {
-          stop?.();
-          void save(DEFAULT_SHORTCUTS[action]).then(show);
-        }),
-      );
-    });
-    return () => stop?.();
-  }
-
-  private async saveAndUpdate() {
-    await this.plugin.saveThemes();
-    this.update();
-  }
-
-  /** The user's themes, each a page of its colors. */
-  private themeList(): SettingDefinitionItem {
-    const themes = this.plugin.settings.themes;
-    return {
-      type: "list",
-      heading: "Your themes",
-      emptyState: "No themes of your own. Add one, starting from any theme, or import one.",
-      items: themes.map((t) => this.themePage(t)),
-      onReorder: (from, to) => {
-        themes.splice(to, 0, ...themes.splice(from, 1));
-        void this.saveAndUpdate();
-      },
-      addItem: { name: "Add theme", action: (el) => this.chooseStart(el) },
-    };
-  }
-
-  /** Lets the user pick the theme a new one starts as a copy of. */
-  private chooseStart(el: HTMLElement) {
-    const menu = new Menu();
-    menu.addItem((i) => i.setTitle("Start from").setIsLabel(true));
-    const options = themeOptions();
-    options.forEach((t, i) => {
-      if (t.user && !options[i - 1]?.user) menu.addSeparator();
-      menu.addItem((item) => item.setTitle(themeTitle(t.id)).onClick(() => this.addThemes([{ name: `${t.name} copy`, colors: copyColors(t.id) }])));
-    });
-    const r = el.getBoundingClientRect();
-    menu.showAtPosition({ x: r.left, y: r.bottom }, el.doc);
-  }
-
-  /** Adds themes with new ids, renamed when another theme has their name. */
-  private addThemes(added: { name: string; colors: Colors }[]) {
-    const themes = this.plugin.settings.themes;
-    for (const t of added) {
-      themes.push({ id: newThemeId(themes.map((x) => x.id)), name: uniqueName(t.name, themes.map((x) => x.name)), colors: t.colors });
-    }
-    void this.saveAndUpdate();
-  }
-
-  /** Deletes the theme after asking, and leaves its page. */
-  private deleteTheme(t: UserTheme) {
-    new ConfirmModal(this.app, `Delete theme ${t.name}?`, "Drawings with this theme get the Classic colors.", "Delete", () => {
-      const settings = this.plugin.settings;
-      settings.themes = settings.themes.filter((x) => x !== t);
-      settings.theme = validTheme(settings.theme, settings.themes);
-      void this.plugin.saveThemes().then(() => {
-        // Obsidian has no public way back from a page; without it, the emptied page stays until the user goes back.
-        (this as unknown as { setting?: { closePage?: () => void } }).setting?.closePage?.();
-        this.update();
-      });
-    }).open();
-  }
-
-  /** A theme's page: renaming and deleting it, then the colors of each type of element. */
-  private themePage(t: UserTheme): SettingDefinitionPage {
-    const page: SettingDefinitionPage & { id: string } = {
-      type: "page",
-      id: t.id, // Obsidian finds the open page by its id, the name by default, so renaming the theme keeps the page open
-      name: t.name,
-      desc: t.id === this.plugin.settings.theme ? "New drawings get this theme." : undefined,
-      items: [
-        {
-          type: "group",
-          items: [
-            {
-              name: "Rename",
-              desc: `Called ${t.name}.`,
-              action: () => new RenameModal(this.app, t.name, (name) => {
-                t.name = name;
-                void this.saveAndUpdate();
-              }).open(),
-            },
-            { name: "Delete theme", desc: "Drawings with this theme get the Classic colors.", action: () => this.deleteTheme(t) },
-          ],
-        },
-        {
-          type: "group",
-          heading: "Colors",
-          items: LOOK_KEYS.map((k) => ({ name: LOOK_KEY_TITLES[k], render: (setting: Setting) => this.lookSetting(setting, t, k) })),
-        },
-        {
-          name: "Reset colors to defaults",
-          desc: "Restores the Classic colors of every type of element.",
-          action: () => {
-            t.colors = copyColors("classic");
-            void this.saveAndUpdate();
-          },
-        },
-      ],
-    };
-    return page;
-  }
-
-  /** The colors of a type of element in a theme: a picker for each, and a button restoring the Classic ones. */
-  private lookSetting(setting: Setting, theme: UserTheme, key: LookKey) {
-    lookPickers(
-      "", "",
-      () => theme.colors[key],
-      (part, value) => {
-        theme.colors[key] = { ...theme.colors[key], [part]: value };
-        void this.plugin.saveThemes();
-      },
-      () => {
-        theme.colors[key] = { ...colorsOf("classic")[key] };
-        void this.plugin.saveThemes();
-      },
-      lookPartsOf(key),
-    ).into(setting);
-  }
-
-  /** Importing themes from the clipboard or a file, and exporting all of them. */
-  private themeTransfer(): SettingDefinitionItem {
-    const themes = this.plugin.settings.themes;
-    return {
-      type: "group",
-      heading: "Import and export",
-      items: [
-        { name: "Import from the clipboard", desc: "Themes copied as JSON from another vault, or shared with you.", action: () => void this.importFromClipboard() },
-        { name: "Import from a file", desc: "A JSON file of themes saved from another vault, or shared with you.", action: () => this.importFromFile() },
-        { name: "Export to the clipboard", desc: "All your themes as JSON.", disabled: () => !themes.length, action: () => void this.copyThemes(themes) },
-        {
-          name: "Export as a file in the vault", desc: "All your themes as a JSON file at the root of the vault.", disabled: () => !themes.length,
-          action: () => void this.saveThemesFile(themes, "C4 themes"),
-        },
-      ],
-    };
-  }
-
-  private async copyThemes(themes: UserTheme[]) {
-    try {
-      await navigator.clipboard.writeText(themesToJson(themes));
-    } catch {
-      return void new Notice("Can't write to the clipboard.");
-    }
-    new Notice(`${themes.length} ${themes.length === 1 ? "theme" : "themes"} copied to the clipboard.`);
-  }
-
-  /** Saves the themes as a JSON file at the root of the vault, numbered when the name is taken. */
-  private async saveThemesFile(themes: UserTheme[], name: string) {
-    const vault = this.app.vault;
-    let path = normalizePath(`${name}.json`);
-    for (let i = 2; vault.getAbstractFileByPath(path); i++) path = normalizePath(`${name} ${i}.json`);
-    try {
-      await vault.create(path, themesToJson(themes));
-    } catch {
-      return void new Notice(`Can't save ${path}.`);
-    }
-    new Notice(`Saved to ${path}.`);
-  }
-
-  private importThemes(text: string) {
-    const found = parseThemes(text);
-    if (!found) return void new Notice("No themes to import.");
-    this.addThemes(found);
-    new Notice(found.length === 1 ? `Theme ${found[0].name} imported.` : `${found.length} themes imported.`);
-  }
-
-  private async importFromClipboard() {
-    let text = "";
-    try {
-      text = await navigator.clipboard.readText();
-    } catch {
-      return void new Notice("Can't read the clipboard.");
-    }
-    this.importThemes(text);
-  }
-
-  private importFromFile() {
-    const input = createEl("input", { attr: { type: "file", accept: ".json,application/json" } });
-    input.addEventListener("change", () => {
-      const file = input.files?.[0];
-      if (file) void file.text().then((text) => this.importThemes(text));
-    });
-    input.click();
-  }
-
-  private general(): SettingDefinitionItem[] {
-    return [
-      {
-        name: "Show panel",
-        desc: "Buttons for adding, connecting and editing elements, docked on every drawing.",
-        control: { type: "toggle", key: "showPanel" },
-      },
-      {
-        name: "Panel position",
-        desc: "A row at the bottom or top of the drawing, or a column on its left or right side. On phones, where Excalidraw's own toolbars take the bottom, Bottom shows it at the top.",
-        control: { type: "dropdown", key: "panelPosition", options: PANEL_POSITIONS },
-      },
-    ];
-  }
-}
-
-/** A theme's name after a few of its colors: of a person, a system, a container and a component. */
-function themeTitle(t: Theme): DocumentFragment {
-  return createFragment((f) => {
-    const swatches = f.createSpan({ cls: "c4-swatches" });
-    for (const color of themeSwatches(t)) swatches.createSpan({ cls: "c4-swatch" }).setCssProps({ "--c4-swatch": color });
-    f.appendText(themeName(t) ?? "Missing theme");
-  });
-}
-
-/** Picks a theme by name. */
-class ThemeModal extends FuzzySuggestModal<{ id: Theme; name: string }> {
-  constructor(app: App, private readonly current: Theme, private readonly choose: (t: Theme) => void) {
-    super(app);
-    this.setPlaceholder("Theme of the drawing");
-  }
-
-  getItems(): { id: Theme; name: string }[] {
-    return themeOptions();
-  }
-
-  getItemText(t: { id: Theme; name: string }): string {
-    return t.id === this.current ? `${t.name} (current)` : t.name;
-  }
-
-  onChooseItem(t: { id: Theme; name: string }) {
-    this.choose(t.id);
-  }
-}
-
-/** Picks an icon by its name, each shown with its picture. */
-class IconModal extends FuzzySuggestModal<string> {
-  constructor(app: App, private readonly choose: (id: string) => void) {
-    super(app);
-    this.setPlaceholder("Icon of the container");
-  }
-
-  getItems(): string[] {
-    return iconIds();
-  }
-
-  getItemText(id: string): string {
-    return iconName(id);
-  }
-
-  renderSuggestion(match: FuzzyMatch<string>, el: HTMLElement) {
-    super.renderSuggestion(match, el);
-    el.addClass("c4-icon-suggestion");
-    const glyph = createSpan({ cls: "c4-icon-glyph" });
-    setIcon(glyph, match.item);
-    el.prepend(glyph);
-  }
-
-  onChooseItem(id: string) {
-    this.choose(id);
-  }
-}
-
-/** Asks before doing something that can't be undone. */
-class ConfirmModal extends Modal {
-  constructor(app: App, private readonly heading: string, private readonly text: string, private readonly confirm: string, private readonly onConfirm: () => void) {
-    super(app);
-  }
-
-  onOpen() {
-    this.setTitle(this.heading);
-    this.contentEl.createEl("p", { text: this.text });
-    new Setting(this.contentEl)
-      .addButton((b) => b.setButtonText("Cancel").onClick(() => this.close()))
-      .addButton((b) => b.setButtonText(this.confirm).setDestructive().setCta().onClick(() => {
-        this.close();
-        this.onConfirm();
-      }));
-  }
-
-  onClose() {
-    this.contentEl.empty();
-  }
-}
-
-/** Asks for a new name for a theme. */
-class RenameModal extends Modal {
-  constructor(app: App, private readonly name: string, private readonly rename: (name: string) => void) {
-    super(app);
-  }
-
-  onOpen() {
-    this.setTitle("Rename theme");
-    let value = this.name;
-    const submit = () => {
-      if (!value.trim()) return;
-      this.rename(value.trim());
-      this.close();
-    };
-    new Setting(this.contentEl).setName("Name").addText((t) => {
-      t.setValue(value).onChange((v) => (value = v));
-      t.inputEl.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") submit();
-      });
-      window.setTimeout(() => t.inputEl.select(), 0);
-    });
-    new Setting(this.contentEl).addButton((b) => b.setButtonText("Rename").setCta().onClick(submit));
-  }
-
-  onClose() {
-    this.contentEl.empty();
-  }
-}
-
-/** A small icon button in a form's top right corner, next to its close button. */
-interface HeaderButton {
-  icon: string;
-  label: string;
-  onClick: () => void;
-}
-
-/** A small form: Enter submits, Ctrl+Enter in a multi-line field. */
-class FormModal extends Modal {
-  private readonly values: Record<string, string> = {};
-  readonly before: ((el: HTMLElement) => void)[] = []; // settings above the fields
-  readonly extras: ((el: HTMLElement) => void)[] = []; // more settings below the fields
-  headerButton?: HeaderButton;
-  private headerEl?: HTMLElement;
-
-  constructor(
-    app: App,
-    private readonly heading: string,
-    private readonly fields: Field[],
-    private readonly onSubmit: (values: Record<string, string>) => void,
-    private readonly submitText = "Add",
-  ) {
-    super(app);
-    for (const f of fields) this.values[f.key] = f.value ?? "";
-  }
-
-  onOpen() {
-    this.setTitle(this.heading);
-    this.modalEl.addClass("c4-form");
-    const hb = this.headerButton;
-    if (hb) {
-      const b = (this.headerEl = this.modalEl.createDiv({
-        cls: "c4-modal-action modal-header-button mod-raised clickable-icon",
-        attr: { "aria-label": hb.label, role: "button" },
-      }));
-      setIcon(b, hb.icon);
-      // Next to the close button, wherever the platform and theme put it.
-      window.requestAnimationFrame(() => {
-        const close = this.modalEl.querySelector<HTMLElement>(".modal-close-button, .modal-header-button:not(.c4-modal-action)");
-        if (!close) return;
-        const gap = 4;
-        // Layout offsets, which the modal's opening animation does not scale.
-        const end = close.offsetParent === this.modalEl
-          ? this.modalEl.clientWidth - close.offsetLeft
-          : this.modalEl.getBoundingClientRect().right - close.getBoundingClientRect().left;
-        b.setCssProps({ "--c4-action-end": `${end + gap}px` });
-      });
-      // Keep focus in the field being typed in.
-      b.addEventListener("mousedown", (e) => e.preventDefault());
-      b.addEventListener("click", (e) => {
-        e.preventDefault();
-        hb.onClick();
-      });
-    }
-    for (const before of this.before) before(this.contentEl);
-    let first: HTMLElement | null = null;
-    for (const f of this.fields) {
-      const setting = new Setting(this.contentEl).setName(f.name).setClass("c4-field");
-      const wire = (input: HTMLElement) => {
-        first ??= input;
-        input.addEventListener("keydown", (e: KeyboardEvent) => {
-          if (e.key !== "Enter" || e.isComposing || (f.multiline && !(e.ctrlKey || e.metaKey))) return;
-          e.preventDefault();
-          this.submit();
-        });
-      };
-      if (f.multiline) {
-        setting.addTextArea((t) => {
-          t.setValue(this.values[f.key] ?? "").setPlaceholder(f.placeholder ?? "").onChange((v) => (this.values[f.key] = v));
-          t.inputEl.rows = 4;
-          wire(t.inputEl);
-        });
-      } else {
-        setting.addText((t) => {
-          t.setValue(this.values[f.key] ?? "").setPlaceholder(f.placeholder ?? "").onChange((v) => (this.values[f.key] = v));
-          wire(t.inputEl);
-        });
-      }
-    }
-    for (const extra of this.extras) extra(this.contentEl);
-    new Setting(this.contentEl).addButton((b) => b.setButtonText(this.submitText).setCta().onClick(() => this.submit()));
-    (first as HTMLElement | null)?.focus();
-  }
-
-  onClose() {
-    this.headerEl?.remove();
-    this.contentEl.empty();
-  }
-
-  submit() {
-    this.close();
-    this.onSubmit(this.values);
-  }
 }
