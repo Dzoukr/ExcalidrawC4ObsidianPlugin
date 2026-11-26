@@ -171,7 +171,8 @@ export class Scene {
   /**
    * Where else a relationship between two elements should be drawn: every other diagram that shows its ends or the
    * elements containing them, as two different boxes, and has no relationship between them yet, either way: a level
-   * above sums up what is below, so one relationship there may stand for a conversation both ways below.
+   * above sums up what is below, so one relationship there may stand for a conversation both ways below. Not a diagram
+   * where neither end belongs to its level: the relationship is of a level above, and shows there as a ghost.
    */
   liftTargets(from: string, to: string, except: DiagramId): { diagram: DiagramId; from: El; to: El }[] {
     const out: { diagram: DiagramId; from: El; to: El }[] = [];
@@ -182,9 +183,24 @@ export class Scene {
       if (!a || !b) continue;
       const ma = this.modelId(a)!;
       const mb = this.modelId(b)!;
+      if (!ofLevel(this, diagram, ma) && !ofLevel(this, diagram, mb)) continue;
       if (ma !== mb && !this.related(diagram, ma, mb)) out.push({ diagram, from: a, to: b });
     }
     return out;
+  }
+
+  /**
+   * The level a relationship between two elements belongs to: the deeper of the levels of its ends, where at least one
+   * of them is drawn as an element of that level. Undefined when that level has no layer.
+   */
+  levelOf(a: string, b: string): DiagramId | undefined {
+    const level = (id: string) => {
+      const p = this.parent(id);
+      return p ? this.diagramFor(p) : CONTEXT;
+    };
+    const [la, lb] = [level(a), level(b)];
+    if (la === undefined || lb === undefined) return undefined;
+    return depthOf(this, la) >= depthOf(this, lb) ? la : lb;
   }
 
   /** Whether the element is the scope or inside it. */
@@ -303,7 +319,7 @@ function endsStandFor(scene: Scene, [xa, xb]: [string, string], [a, b]: [string,
 
 /**
  * The copies of a relationship on the levels below: the same relationship between the elements standing for its ends
- * there, either way, with the same description, technology and metadata, as copied from it and not edited since. One
+ * there, either way, with the same description, technology, metadata and note, as copied from it and not edited since. One
  * between the same elements that says something else is another relationship. The levels above, and other layers of
  * its own level, sum up what is below them, so they keep what they say.
  */
@@ -313,7 +329,7 @@ export function copiesOf(scene: Scene, arrow: El): El[] {
   if (!ends || !data) return [];
   const same = (d: C4Relationship) =>
     d.description.trim() === data.description.trim() && (d.technology ?? "").trim() === (data.technology ?? "").trim() &&
-    sameRecord(d.metadata ?? {}, data.metadata ?? {});
+    sameRecord(d.metadata ?? {}, data.metadata ?? {}) && (d.note ?? "").trim() === (data.note ?? "").trim();
   const depth = depthOf(scene, scene.diagramOf(arrow));
   return [...scene.byId.values()].filter((x) => {
     const d = x.containerId ? null : relationshipData(x.customData);

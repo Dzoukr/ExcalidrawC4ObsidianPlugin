@@ -1,8 +1,8 @@
 import { AppState, El, ExcalidrawAutomate, ExcalidrawView, getEA } from "./excalidraw";
-import { ghostSource } from "./ghosts";
+import { ghostId, ghostSource } from "./ghosts";
 import { strokesOf } from "./icons";
 import { Group, LayerGroups, labelSize } from "./groups";
-import type { SelectionShape } from "./highlight";
+import type { NoteMark, SelectionShape } from "./highlight";
 import { DiagramId, Scene, copiesOf, endOfLevel, grid, levelsUpTo, newId, nextSlot, ofLevel, relatedIn, relationshipsBelow, row, sameWay, unrelated } from "./layers";
 import { LayerTx, readScene, readStore, selectionOf } from "./layertx";
 import { arrowAlong, labelOn, pairLanes, pairOrder } from "./lanes";
@@ -10,7 +10,7 @@ import { Theme, colorsOf, themeOfNewDrawings } from "./themes";
 import {
   BOUNDARY_LABEL, BOUNDARY_PAD, Box, C4Element, C4Group, Look, boundaryData, groupLookOf, C4Relationship, GROUP_LABEL, GROUP_PAD, fittedGroup, groupData, groupLabelAt, ELEMENT_WIDTH, KEY, MIN_HEIGHT, PADDING, RELATIONSHIP_COLOR, Vec, ViewKind, allowedKinds, arrowMidpoint,
   boundaryLabel, bounds, boxSize, canBeExternal, center, contains, edgePoint, elementData, fittedBoundary, levelOf, elementLabel, lookOf, isGhost, makeWay, nameText, FONT_SIZE, NAME_FONT_SIZE, lookSignature, lookSignatureOf, useColors,
-  overlaps, parentFor, parentKind, pushOut, relationshipData, textRoom, wayBack, relationshipLabel, zoomView, nearestIn, boxStyle, partOf, shapeOf, shapeParts, iconOf, nearestFree, corners, shapeVersionOf, type Ink, MISPLACED_LOOK, SHAPE_VERSION, STROKE_WIDTH, LINE_WIDTH,
+  noteOf, overlaps, parentFor, parentKind, pushOut, relationshipData, textRoom, wayBack, relationshipLabel, zoomView, nearestIn, boxStyle, partOf, shapeOf, shapeParts, iconOf, nearestFree, corners, shapeVersionOf, type Ink, MISPLACED_LOOK, SHAPE_VERSION, STROKE_WIDTH, LINE_WIDTH,
 } from "./model";
 import type { Direction } from "./model";
 
@@ -161,6 +161,48 @@ export function selectionShapes(view: ExcalidrawView): SelectionShape[] {
   });
 }
 
+/** The marks last found in the elements of a drawing, which Excalidraw keeps as they are until they change. */
+const marksFound = new WeakMap<readonly El[], { parents: boolean; marks: NoteMark[] }>();
+
+/**
+ * The C4 elements and relationships on the canvas that have a note, with the note and where they are drawn; with
+ * `parents`, also those of the levels above around the layer: their dimmed copies, and the boundary of the layer and
+ * of the levels above, with the notes of their systems and containers.
+ */
+export function noteMarks(view: ExcalidrawView, parents: boolean): NoteMark[] {
+  const els = view.excalidrawAPI?.getSceneElements() ?? [];
+  const found = marksFound.get(els);
+  if (found?.parents === parents) return found.marks;
+  const marks = findMarks(els, parents);
+  marksFound.set(els, { parents, marks });
+  return marks;
+}
+
+function findMarks(els: readonly El[], parents: boolean): NoteMark[] {
+  // The labels of relationships, a ghost's among them, which is bound to nothing.
+  const labels = new Map(els.filter((e) => e.type === "text" && e.containerId).map((e) => [e.containerId!, e]));
+  // Every layer, read only when the notes of the levels above are needed.
+  let scene: Scene | undefined;
+  const read = () => (scene ??= readScene(els).scene);
+  return els.flatMap((el): NoteMark[] => {
+    if (el.isDeleted || el.containerId || el.type === "text") return [];
+    // A ghost of a level above has the note of what it is a copy of.
+    let data = el.customData;
+    if (isGhost(data)) {
+      if (!parents) return [];
+      data = read().byId.get(ghostSource(el.id) ?? "")?.customData;
+    }
+    const scope = boundaryData(data)?.boundary;
+    const element = elementData(data);
+    const relationship = relationshipData(data);
+    const note = scope ? (parents ? noteOf(read().element(scope) ?? {}) : undefined) : noteOf(element ?? relationship ?? {});
+    if (!note) return [];
+    if (!relationship) return [{ id: el.id, note, shape: { box: el } }];
+    const points = (el.points ?? []).map(([x, y]) => ({ x: el.x + x, y: el.y + y }));
+    return [{ id: el.id, note, shape: { points, label: labels.get(el.id) } }];
+  });
+}
+
 /** Whether all that is selected is C4 elements, relationships and groups, or nothing is. */
 export function onlyC4Selected(view: ExcalidrawView): boolean {
   return selection(view).owners.every((e) => !!e && isItem(e));
@@ -267,6 +309,61 @@ export function itemAt(view: ExcalidrawView, p: Vec): El | undefined {
     }
   }
   return undefined;
+}
+
+/**
+ * What a drag on the canvas takes along, as Excalidraw would not: from a group's outline or label, the group and its
+ * label, the groups nested in it with theirs and the boxes in them all; from the outline or the label of the boundary
+ * of the layer, on nothing else, the boundary and its label, and the boxes and groups of the layer's level inside it.
+ * Selected with it so the canvas moves them all as it is dragged, not only once it is dropped. The group or boundary
+ * first; null for a point elsewhere, and on the handles of the group or boundary selected, which resize or rotate it
+ * alone.
+ */
+export function dragCarry(view: ExcalidrawView, p: Vec): string[] | null {
+  const api = view.excalidrawAPI;
+  if (!api) return null;
+  const { scene, current } = readScene(api.getSceneElements());
+  if (!scene.view(current)) return null;
+  const state = api.getAppState();
+  const zoom = state.zoom?.value ?? 1;
+  const handle = (b: El) => !!state.selectedElementIds?.[b.id] && onHandle(b, p, zoom);
+  const item = itemAt(view, p);
+  if (item) {
+    const groups = new LayerGroups(scene, current);
+    const g = groups.ofRect(item.id);
+    if (!g || handle(g.rect)) return null;
+    const nested = groups.within(g);
+    const boxes = groups.leafBoxes(g);
+    if (!boxes.length && nested.length < 2) return null; // nothing in it to take along
+    return [...nested.flatMap((n) => [n.rect.id, ...(n.label ? [n.label.id] : [])]), ...boxes.map((b) => b.id)];
+  }
+  const { rect, label } = scene.boundary(current);
+  if (!rect || rect.locked || handle(rect)) return null;
+  const onEdge = outline(rect).some(([a, b]) => distanceToSegment(p, a, b) <= 8 / zoom);
+  if (!onEdge && !(label && contains(label, p))) return null;
+  const inner = scene.elementsIn(current).filter((e) => {
+    if (e.isDeleted || e.containerId || !contains(rect, center(e))) return false;
+    if (groupData(e.customData)) return true;
+    const id = elementData(e.customData) ? scene.modelId(e) : null;
+    return !!id && ofLevel(scene, current, id);
+  });
+  return [rect.id, ...(label ? [label.id] : []), ...inner.map((e) => e.id)];
+}
+
+/**
+ * Whether a point of the drawing is on one of the handles Excalidraw draws around a selected box, or near enough: its
+ * corners and the middles of its sides, a little outside the box, and the rotation handle above it.
+ */
+function onHandle(b: Box, p: Vec, zoom: number): boolean {
+  const pad = 8 / zoom;
+  const [l, t, r, bt] = [b.x - pad, b.y - pad, b.x + b.width + pad, b.y + b.height + pad];
+  const [cx, cy] = [(l + r) / 2, (t + bt) / 2];
+  const handles: Vec[] = [
+    { x: l, y: t }, { x: r, y: t }, { x: l, y: bt }, { x: r, y: bt },
+    { x: cx, y: t }, { x: cx, y: bt }, { x: l, y: cy }, { x: r, y: cy },
+    { x: cx, y: t - 20 / zoom },
+  ];
+  return handles.some((h) => Math.hypot(h.x - p.x, h.y - p.y) <= 16 / zoom);
 }
 
 /** The four sides of a box. */
@@ -764,6 +861,7 @@ function setRelationship(ea: ExcalidrawAutomate, ltx: LayerTx, arrowId: string, 
   const arrow = ltx.get(arrowId);
   if (!arrow) return;
   if (!data.metadata) delete data.metadata;
+  if (!data.note) delete data.note;
   ltx.patch(arrow.id, { customData: { ...(arrow.customData ?? {}), [KEY]: data } });
   const text = boundText(ltx, arrow);
   if (text) {
@@ -822,7 +920,7 @@ function reroute(ltx: LayerTx, arrowId: string) {
 
 /** Lays out the relationships of a box or a boundary again, with the others between the same two elements. */
 function rerouteAll(ltx: LayerTx, el: El) {
-  for (const b of el.boundElements ?? []) if (b.type === "arrow") reroute(ltx, b.id);
+  for (const b of el.boundElements ?? []) if (b.type === "arrow" && !ghostSource(b.id)) reroute(ltx, b.id);
 }
 
 /**
@@ -900,11 +998,21 @@ function addArrow(ea: ExcalidrawAutomate, ltx: LayerTx, from: El, to: El, data: 
 /**
  * Adds a relationship from one element to another, and the same relationship to every other layer showing its ends or
  * the elements containing them, where there is none between them yet, either way. An end that is a ghost of a level
- * above is drawn in the layer first, where its ghost is, as an element around the boundary.
+ * above is drawn in the layer first, where its ghost is, as an element around the boundary. One between two elements
+ * of levels above is added to the level it belongs to instead, and shows in the layer as a ghost.
  */
 export function addRelationship(view: ExcalidrawView, from: El, to: El, data: C4Relationship): boolean {
   return withLayers(view, (ea, ltx) => {
     const layer = ltx.current;
+    const start = ltx.scene();
+    const ofThisLevel = (end: El) => {
+      if (!isGhost(end.customData)) return endOfLevel(start, layer, end.id);
+      const id = endId(start, end);
+      return !!id && ofLevel(start, layer, id);
+    };
+    const ids = [from, to].map((end) => (isGhost(end.customData) ? endId(start, end) : start.modelId(end)));
+    const home = ids[0] && ids[1] && !ofThisLevel(from) && !ofThisLevel(to) ? start.levelOf(ids[0], ids[1]) : undefined;
+    if (home !== undefined && home !== layer) return addAbove(ea, ltx, ids[0]!, ids[1]!, data, home);
     const drawn = (end: El): El | undefined => {
       if (!isGhost(end.customData)) return ltx.get(end.id);
       const scene = ltx.scene();
@@ -920,6 +1028,25 @@ export function addRelationship(view: ExcalidrawView, from: El, to: El, data: C4
     const scene = ltx.scene();
     for (const t of scene.liftTargets(scene.modelId(a)!, scene.modelId(b)!, layer)) addArrow(ea, ltx, t.from, t.to, data, t.diagram);
   });
+}
+
+/**
+ * Adds a relationship between two elements to the level it belongs to, not the layer on the canvas, drawing an end
+ * the level does not show yet around its boundary, and to every other layer it goes to as one added there would.
+ */
+function addAbove(ea: ExcalidrawAutomate, ltx: LayerTx, from: string, to: string, data: C4Relationship, home: DiagramId) {
+  const end = (id: string): El | undefined => {
+    const s = ltx.scene();
+    const element = s.element(id);
+    return s.representative(id, home) ?? (element ? addBox(ea, ltx, { ...element, id }, slotIn(s, home, element), home) : undefined);
+  };
+  const a = end(from);
+  const b = end(to);
+  if (!a || !b || a.id === b.id) return;
+  addArrow(ea, ltx, a, b, data, home);
+  const scene = ltx.scene();
+  for (const t of scene.liftTargets(from, to, home)) addArrow(ea, ltx, t.from, t.to, data, t.diagram);
+  fitBoundary(ltx, home);
 }
 
 /** Puts the layer of the selected system or container on the canvas, creating it first if there is none. */
@@ -1072,9 +1199,9 @@ function carryDown(ea: ExcalidrawAutomate, ltx: LayerTx, scope: string) {
   }
 }
 
-/** A relationship of the same description, technology and metadata as another, to be drawn between other elements. */
+/** A relationship of the same description, technology, metadata and note as another, to be drawn between other elements. */
 const relationshipCopy = (r: C4Relationship): C4Relationship => ({
-  relationship: true, description: r.description, technology: r.technology, metadata: r.metadata,
+  relationship: true, description: r.description, technology: r.technology, metadata: r.metadata, ...(r.note ? { note: r.note } : {}),
 });
 
 /** Adds the dashed boundary of a layer's scope, labelled at its bottom left as C4 does. */
@@ -1228,6 +1355,7 @@ function removeBox(ltx: LayerTx, boxId: string) {
   if (id) setMembers(ltx, scene.diagramOf(box), new Map([[id, undefined]]));
   for (const p of ltx.partsOf(boxId)) ltx.remove(p.id);
   for (const ref of box.boundElements ?? []) {
+    if (ghostSource(ref.id)) continue; // a ghost relationship glued to it: made again without it
     if (ref.type === "arrow") removeArrow(ltx, ref.id);
     else ltx.remove(ref.id);
   }
@@ -1502,5 +1630,49 @@ export function moveBoundary(view: ExcalidrawView, rectId: string, was: Box, dra
     for (const b of inner) moveBox(ltx, b.id, dx, dy);
     // The label goes back to its corner, and relationships carried down to the boundary meet its edge again.
     fitBoundary(ltx, scope, inner.map((b) => b.id));
+  });
+}
+
+/** The element a ghost, or a part of the shape of one, stands for: null for a ghost of anything else. */
+function ghostElement(scene: Scene, ghost: string): { id: string; box: string } | null {
+  const source = ghostSource(ghost);
+  const el = source ? scene.byId.get(source) : undefined;
+  const box = el ? scene.byId.get(partOf(el.customData) ?? el.id) : undefined;
+  const id = box && elementData(box.customData) ? scene.modelId(box) : null;
+  return box && id ? { id, box: box.id } : null;
+}
+
+/**
+ * Keeps the ghosts moved by hand where they were moved to in the layer on the canvas, as a box drawn in it stays where
+ * it is put. A ghost dragged by a part of its shape moves as far as the part did. Given where the ghosts were before.
+ */
+export function pinGhosts(view: ExcalidrawView, moved: { id: string; dx: number; dy: number }[], before: ReadonlyMap<string, Vec>): boolean {
+  return withLayers(view, (_ea, ltx) => {
+    const scene = ltx.scene();
+    const done = new Set<string>();
+    for (const m of moved) {
+      const e = ghostElement(scene, m.id);
+      const was = e && before.get(ghostId(e.box));
+      if (!e || !was || done.has(e.id)) continue;
+      done.add(e.id);
+      ltx.pin(e.id, { x: was.x + m.dx, y: was.y + m.dy });
+    }
+  });
+}
+
+/** Whether a ghost in the layer on the canvas was moved by hand. */
+export function hasPinnedGhosts(view: ExcalidrawView): boolean {
+  const els = view.excalidrawAPI?.getSceneElements() ?? [];
+  const store = readStore(els);
+  return Object.keys(store.pins?.[store.current] ?? {}).length > 0;
+}
+
+/** Lets the selected ghosts moved by hand, or all of them when none is selected, go back to where the layer puts them. */
+export function resetGhosts(view: ExcalidrawView): boolean {
+  const selected = Object.keys(view.excalidrawAPI?.getAppState().selectedElementIds ?? {});
+  return withLayers(view, (_ea, ltx) => {
+    const scene = ltx.scene();
+    const ids = selected.flatMap((id) => ghostElement(scene, id)?.id ?? []);
+    ltx.unpin(ids.length ? ids : undefined);
   });
 }

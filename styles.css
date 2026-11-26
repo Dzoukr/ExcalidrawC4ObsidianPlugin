@@ -369,6 +369,119 @@ body .modal .modal-header-button.c4-modal-action {
   dominant-baseline: central;
 }
 
+/* The mark of an element or relationship with a note, at its top right corner: a small sticky note, never drawn on
+   the canvas itself. */
+.c4-highlight .c4-note-mark {
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.c4-highlight .c4-note-mark-dot {
+  fill: var(--c4-sticky);
+  stroke: var(--c4-sticky-edge);
+  stroke-width: 1;
+  transition: stroke-width 0.1s;
+}
+
+.c4-highlight .c4-note-mark:hover .c4-note-mark-dot {
+  stroke-width: 2;
+}
+
+/* The mark of the note open: as the fold of the note. */
+.c4-highlight .c4-note-mark.is-open .c4-note-mark-dot {
+  fill: var(--c4-sticky-fold);
+  stroke-width: 2;
+}
+
+.c4-highlight .c4-note-mark-icon {
+  color: var(--c4-sticky-text);
+  stroke-width: 2.5;
+}
+
+/* The colors of a sticky note, yellow in light and dark themes alike, as on paper. */
+.c4-host {
+  --c4-sticky: #fff3a6;
+  --c4-sticky-fold: #f0dc6e;
+  --c4-sticky-edge: #d9c24f;
+  --c4-sticky-text: #3b3410;
+  --c4-sticky-muted: #6b5f1f;
+}
+
+/* The note of the selected element or relationship: a sticky note over the canvas right next to it, placed by the
+   plugin, its bottom right corner folded. */
+.c4-note {
+  position: absolute;
+  left: var(--c4-note-x, 0);
+  top: var(--c4-note-y, 0);
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  /* As wide as the note, a short one not narrower than the minimum, a long one wrapped at the maximum. */
+  width: max-content;
+  min-width: min(140px, calc(100% - 16px));
+  max-width: min(280px, calc(100% - 16px));
+  overflow-wrap: anywhere;
+  max-height: min(400px, calc(100% - 16px));
+  color: var(--c4-sticky-text);
+  background: linear-gradient(315deg, transparent 12px, var(--c4-sticky) 12px);
+  border-radius: 2px;
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.18)) drop-shadow(0 8px 14px rgba(0, 0, 0, 0.12));
+  font-size: var(--font-ui-small);
+  line-height: 1.5;
+}
+
+/* The fold: the corner turned over onto the note. */
+.c4-note::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 17px;
+  height: 17px;
+  background: linear-gradient(315deg, transparent 50%, var(--c4-sticky-fold) 50%);
+  border-top-left-radius: 2px;
+}
+
+.c4-note.c4-hidden {
+  display: none;
+}
+
+.c4-note-body {
+  padding: 16px 20px 20px;
+  overflow-y: auto;
+  user-select: text;
+  /* Obsidian's Markdown colors, in the note's own. */
+  --text-normal: var(--c4-sticky-text);
+  --text-muted: var(--c4-sticky-muted);
+  --text-faint: var(--c4-sticky-muted);
+  --link-color: var(--c4-sticky-text);
+  --link-color-hover: var(--c4-sticky-text);
+  --link-external-color: var(--c4-sticky-text);
+  --link-external-color-hover: var(--c4-sticky-text);
+  --link-unresolved-color: var(--c4-sticky-muted);
+  --code-background: rgba(0, 0, 0, 0.06);
+  --code-normal: var(--c4-sticky-text);
+  --blockquote-border-color: var(--c4-sticky-edge);
+  --hr-color: var(--c4-sticky-edge);
+  --checkbox-border-color: var(--c4-sticky-muted);
+}
+
+.c4-note-body a {
+  text-decoration: underline;
+}
+
+/* No margin above the first block of the note or below its last one: the padding is the margin. Obsidian renders each
+   block in a div of its own. */
+.c4-note-body > :first-child,
+.c4-note-body > :first-child > :first-child {
+  margin-top: 0;
+}
+
+.c4-note-body > :last-child,
+.c4-note-body > :last-child > :last-child {
+  margin-bottom: 0;
+}
+
 /* The colors of an element or a type of element: a named color picker for its outline, fill and text. */
 .c4-look .setting-item-control {
   gap: 12px;

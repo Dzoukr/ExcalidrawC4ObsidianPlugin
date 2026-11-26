@@ -17,9 +17,10 @@ export interface Settings {
   theme: Theme; // of new drawings
   themes: UserTheme[]; // the user's own, after the built-in ones
   askKind: boolean; // ask what a drawing nobody's yet is for, even with no other plugin drawing its own kind of diagram
+  parentNotes: boolean; // the notes of the levels above, around a level, can be opened on it
 }
 
-export const DEFAULT_SETTINGS: Settings = { showPanel: true, panelPosition: "right", shortcuts: DEFAULT_SHORTCUTS, theme: "classic", themes: [], askKind: false };
+export const DEFAULT_SETTINGS: Settings = { showPanel: true, panelPosition: "right", shortcuts: DEFAULT_SHORTCUTS, theme: "classic", themes: [], askKind: false, parentNotes: true };
 
 /** The themes from saved settings, their colors over the defaults. */
 function loadThemes(saved: Partial<Settings> | null): UserTheme[] {
@@ -37,6 +38,7 @@ export function loadSettings(saved: Partial<Settings> | null): Settings {
   const settings: Settings = { ...DEFAULT_SETTINGS, ...saved, shortcuts: loadShortcuts(saved?.shortcuts) };
   if (!isPanelPosition(settings.panelPosition)) settings.panelPosition = DEFAULT_SETTINGS.panelPosition;
   settings.askKind = settings.askKind === true;
+  settings.parentNotes = settings.parentNotes !== false;
   settings.themes = loadThemes(saved);
   settings.theme = validTheme(settings.theme, settings.themes);
   return settings;
@@ -66,6 +68,7 @@ export class C4SettingTab extends PluginSettingTab {
     if (key === "showPanel") settings.showPanel = !!value;
     else if (key === "panelPosition" && isPanelPosition(value)) settings.panelPosition = value;
     else if (key === "askKind") settings.askKind = !!value;
+    else if (key === "parentNotes") settings.parentNotes = !!value;
     else if (key === "theme") {
       settings.theme = validTheme(value, settings.themes);
       return this.plugin.saveThemes();
@@ -332,6 +335,11 @@ export class C4SettingTab extends PluginSettingTab {
         name: "Panel position",
         desc: "A row at the bottom or top of the drawing, or a column on its left or right side. On phones, where Excalidraw's own toolbars take the bottom, Bottom shows it at the top.",
         control: { type: "dropdown", key: "panelPosition", options: PANEL_POSITIONS },
+      },
+      {
+        name: "Show notes of the levels above",
+        desc: "The notes of what the levels above show around a level, dimmed, such as external systems, and of the systems and containers whose boundaries are around it, can be opened from their marks there.",
+        control: { type: "toggle", key: "parentNotes" },
       },
     ];
   }

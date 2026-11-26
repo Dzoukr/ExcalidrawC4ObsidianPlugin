@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { mergeColors } from "../src/themes.ts";
 import {
   CONTAINER_TYPES, DEFAULT_LOOKS, ELEMENT_WIDTH, FONT_SIZE, KEY, MIN_HEIGHT, NAME_FONT_SIZE, PADDING, ROOM_LINE, SHAPE_VERSION, arrowMidpoint, bounds,
-  boxSize, boxStyle, cleanMetadata, contains, edgePoint, elementData, elementLabel, groupLookOf, iconOf, laneLine, laneOffsets, lookKeyOf, lookOf,
-  lookSignature, lookSignatureOf, nameRoom, nameText, nearestFree, nearestIn, normalOf, overlaps, ownGroupLook, ownLook, partOf, rayExit,
+  boxSize, boxStyle, cleanMetadata, cleanNote, contains, edgePoint, elementData, elementLabel, groupLookOf, iconOf, laneLine, laneOffsets, lookKeyOf, lookOf,
+  lookSignature, lookSignatureOf, nameRoom, nameText, nearestFree, nearestIn, normalOf, noteOf, overlaps, ownGroupLook, ownLook, partOf, rayExit,
   relationshipData, relationshipLabel, shapeDrawing, shapeOf, shapeParts, shapeVersionOf, wrap,
 } from "../src/model.ts";
 import { withColors } from "./fixtures.ts";
@@ -93,6 +93,15 @@ test("metadata keeps rows with a key, trimmed, the last of the same key winning"
   assert.equal(cleanMetadata([]), undefined);
   assert.equal(cleanMetadata([["", "x"]]), undefined);
   assert.deepEqual(cleanMetadata([["empty", ""]]), { empty: "" });
+});
+
+test("a note is kept as typed, without white space around it, and only white space is none", () => {
+  assert.equal(cleanNote("  Ask **Team A**\n\n- first\n"), "Ask **Team A**\n\n- first");
+  assert.equal(cleanNote(" \n "), undefined);
+  assert.equal(cleanNote(undefined), undefined);
+  assert.equal(noteOf({ note: " x " }), "x");
+  assert.equal(noteOf({ note: 42 }), undefined);
+  assert.equal(noteOf({}), undefined);
 });
 
 test("going in a direction picks the nearest box that way, straight ahead before one off to the side", () => {

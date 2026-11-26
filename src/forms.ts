@@ -26,9 +26,12 @@ export const submitText = (verb: Verb): string => (verb === "Edit" ? "Save" : "A
 export function elementFields(kind: C4Kind, external: boolean): Field[] {
   const fields: Field[] = [{ key: "name", name: "Name", placeholder: kindTitle(kind, external) }];
   if (hasTechnology(kind)) fields.push({ key: "technology", name: "Technology", placeholder: "E.g. ASP.NET, Spring Boot, PostgreSQL" });
-  fields.push({ key: "description", name: "Description", multiline: true });
+  fields.push({ key: "description", name: "Description", multiline: true }, noteField);
   return fields;
 }
+
+/** The text field of the note of an element or relationship, which is not drawn. */
+export const noteField: Field = { key: "note", name: "Note", multiline: true, placeholder: "Markdown supported note" };
 
 /** A choice in a row of buttons with pictures: what it stands for, its name, and the shape pictured, with its icon. */
 interface PictureOption<T extends string> {

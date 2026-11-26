@@ -29,6 +29,7 @@ export interface C4Element {
   id?: string; // the same element in every diagram; the box's own id for elements drawn before ids
   parent?: string; // the system of a container, the container of a component
   metadata?: Record<string, string>; // key: value pairs, not drawn
+  note?: string; // Markdown, not drawn: marked on the canvas, shown when the element is selected
   look?: Partial<Look>; // colors of this element, over those of its type
 }
 
@@ -38,6 +39,7 @@ export interface C4Relationship {
   description: string;
   technology?: string;
   metadata?: Record<string, string>; // key: value pairs, not drawn
+  note?: string; // Markdown, not drawn: marked on the canvas, shown when the relationship is selected
 }
 
 /** What a layer below the system context shows: the containers of a system or the components of a container. */
@@ -60,7 +62,11 @@ export interface C4Store {
   views: Record<string, ViewKind | null>; // every layer, null for the system context
   hidden: Record<string, unknown[]>; // the elements of every layer but the current one
   theme?: string; // the drawing's colors: a built-in theme or one of the user's; none before the drawing had C4 elements
+  pins?: Record<string, Pins>; // by layer: where the ghosts of the levels above were moved to in it by hand
 }
+
+/** Where ghosts were moved to by hand in a layer, by the id of the element each is a ghost of. */
+export type Pins = Record<string, Vec>;
 
 /** The dashed boundary of a diagram's scope, and its label. */
 interface C4Boundary {
@@ -96,6 +102,14 @@ export function cleanMetadata(rows: readonly (readonly [string, string])[]): Rec
   for (const [key, value] of rows) if (key.trim()) out[key.trim()] = value.trim();
   return Object.keys(out).length ? out : undefined;
 }
+
+/** A note from a form: none when it is only white space, else as typed, without white space around it. */
+export function cleanNote(note: string | undefined): string | undefined {
+  return note?.trim() || undefined;
+}
+
+/** The note of an element or relationship, when it has one. */
+export const noteOf = (data: { note?: unknown }): string | undefined => (typeof data.note === "string" ? cleanNote(data.note) : undefined);
 
 const isKind = (k: unknown): k is C4Kind => KINDS.includes(k as C4Kind);
 

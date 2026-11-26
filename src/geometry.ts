@@ -41,6 +41,20 @@ export function makeWay(from: Box, to: Box) {
       const c = center(b);
       return { x: dx(c.x), y: dy(c.y) };
     },
+    /**
+     * How far a box moves to keep where it is around the element, going by its center: beyond an edge as `move` does,
+     * alongside the element at the same share of the way along it. Unlike `move`, it follows the element wherever it
+     * goes, and never jumps as a box comes past an edge.
+     */
+    follow: (b: Box): Vec => {
+      const along = (c: number, f0: number, fSize: number, t0: number, tSize: number) => {
+        if (c <= f0) return c + t0 - f0;
+        if (c >= f0 + fSize) return c + t0 + tSize - f0 - fSize;
+        return t0 + ((c - f0) / fSize) * tSize;
+      };
+      const c = center(b);
+      return { x: along(c.x, from.x, from.width, to.x, to.width) - c.x, y: along(c.y, from.y, from.height, to.y, to.height) - c.y };
+    },
     /** A box around the element, stretched edge by edge: an enclosing boundary grows with it. */
     stretch: (b: Box): Box => {
       const x = b.x + dx(b.x);

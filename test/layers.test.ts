@@ -70,6 +70,21 @@ test("a relationship drawn in a container layer goes up to the system context, u
   assert.deepEqual(scene.liftTargets("m", "p", "s"), [], "as shop → mail does for mail → API");
 });
 
+test("a relationship between elements of a level above goes to that level only, not to the layers showing them", () => {
+  const scene = sceneOf({
+    [CONTEXT]: context,
+    s: [...shop, box("mail2", { kind: "system", id: "m", external: true })],
+    p: [box("ctl", { kind: "component", id: "c", parent: "p" })],
+  });
+  assert.equal(scene.levelOf("u", "m"), CONTEXT);
+  assert.equal(scene.levelOf("u", "w"), "s");
+  assert.equal(scene.levelOf("c", "m"), "p");
+  assert.equal(scene.levelOf("c", "w"), "p");
+  const fresh = sceneOf({ [CONTEXT]: context.filter((e) => e.id !== "a2"), s: [...shop, box("mail2", { kind: "system", id: "m", external: true })] });
+  assert.deepEqual(fresh.liftTargets("u", "m", CONTEXT), [], "the shop's layer shows both, as elements of the level above");
+  assert.deepEqual(fresh.liftTargets("w", "m", "s").map((t) => t.diagram), [CONTEXT], "one of the shop's own goes up still");
+});
+
 test("a relationship inside one element does not go up to it", () => {
   const scene = sceneOf({ [CONTEXT]: context, s: shop });
   assert.deepEqual(scene.liftTargets("w", "p", "s"), []);
@@ -314,6 +329,20 @@ test("a relationship's copy has the same metadata, in whatever order its keys ar
       withMetadata(arrow("a3", "user2", "web"), { owner: "Team A", port: "443" }), // the same, its keys the other way round
       withMetadata(arrow("a4", "user2", "api"), { owner: "Team A" }), // one key less
       withMetadata(arrow("a5", "user2", "api"), { owner: "Team A", port: "80" }), // another value
+    ],
+  });
+  assert.deepEqual(copiesOf(scene, scene.byId.get("a1")!).map((a) => a.id), ["a3"]);
+});
+
+test("a relationship's copy has the same note", () => {
+  const withNote = (a: El, note?: string): El => ({ ...a, customData: { [KEY]: { relationship: true, description: "Uses", ...(note === undefined ? {} : { note }) } } });
+  const scene = sceneOf({
+    [CONTEXT]: [...context.filter((e) => e.id !== "a1"), withNote(arrow("a1", "user", "shop"), "Over **VPN**")],
+    s: [
+      ...shop.filter((e) => e.id !== "a3"),
+      withNote(arrow("a3", "user2", "web"), " Over **VPN**\n"), // the same, white space around it aside
+      withNote(arrow("a4", "user2", "api")), // none
+      withNote(arrow("a5", "user2", "api"), "Over the internet"), // another note
     ],
   });
   assert.deepEqual(copiesOf(scene, scene.byId.get("a1")!).map((a) => a.id), ["a3"]);

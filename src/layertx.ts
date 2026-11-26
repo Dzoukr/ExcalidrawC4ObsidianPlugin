@@ -1,8 +1,8 @@
 import { AppState, El, ExcalidrawAutomate, ExcalidrawView, SceneTx, nextVersion } from "./excalidraw";
-import { ghostsFor } from "./ghosts";
+import { ghostSource, ghostsFor } from "./ghosts";
 import { LayerGroups } from "./groups";
 import { DiagramId, Scene, boxBindings, endsOf, guarded, markPatches } from "./layers";
-import { C4Store, CONTEXT, KEY, ViewKind, bounds, elementData, isGhost, partOf, relationshipData, storeData } from "./model";
+import { C4Store, CONTEXT, KEY, Pins, Vec, ViewKind, bounds, elementData, isGhost, partOf, relationshipData, storeData } from "./model";
 
 /** The invisible element keeping the layers that are not on the canvas. */
 const findCarrier = (els: readonly El[]): El | undefined => els.find((e) => !e.isDeleted && storeData(e.customData));
@@ -29,7 +29,8 @@ export function readStore(els: readonly El[]): C4Store {
   const carrier = findCarrier(els);
   const s = carrier ? storeData(carrier.customData) : null;
   const theme = typeof s?.theme === "string" && s.theme ? { theme: s.theme } : {};
-  return { current: s?.current ?? CONTEXT, views: { [CONTEXT]: null, ...(s?.views ?? {}) }, hidden: s?.hidden ?? {}, ...theme };
+  const pins = s?.pins && typeof s.pins === "object" ? { pins: s.pins } : {};
+  return { current: s?.current ?? CONTEXT, views: { [CONTEXT]: null, ...(s?.views ?? {}) }, hidden: s?.hidden ?? {}, ...theme, ...pins };
 }
 
 /** The index of every layer of a drawing, read from its scene, and the layer on the canvas. */
@@ -139,13 +140,15 @@ export function guardLevels(view: ExcalidrawView, last: Guard | undefined): { gu
     const ends = endsOf(scene, r.arrow);
     if (ends) guard.relationships.set(r.arrow.id, ends);
   }
+  // Copies, not the elements on the canvas: deleting a box, Excalidraw unglues the relationships glued to it in place,
+  // which would leave nothing to glue them back by.
   for (const id of guarded(scene, current)) {
     const e = scene.byId.get(id);
     if (!e) continue;
-    guard.keep.set(id, e);
+    guard.keep.set(id, structuredClone(e));
     for (const ref of e.boundElements ?? []) {
       const a = ref.type === "arrow" ? scene.byId.get(ref.id) : undefined;
-      if (a) guard.glued.set(a.id, a);
+      if (a) guard.glued.set(a.id, structuredClone(a));
     }
   }
   return { guard, restored: restored.filter(Boolean), deleted };
@@ -160,17 +163,18 @@ export function refreshCanvas(view: ExcalidrawView) {
   const api = view.excalidrawAPI;
   if (!api) return;
   const { scene, current } = readScene(api.getSceneElements());
+  const pins = readStore(api.getSceneElements()).pins?.[current];
   const tx = new SceneTx(view);
   for (const [id, p] of boxBindings(api.getSceneElements())) tx.patch(id, p);
   for (const [id, p] of markPatches(scene, current)) tx.patch(id, p);
   for (const [id, p] of new LayerGroups(scene, current).patches()) tx.patch(id, p);
-  syncGhosts(tx, scene, current);
+  syncGhosts(tx, scene, current, pins);
   tx.commit("NEVER");
 }
 
 /** Brings the ghosts of the levels above the layer on the canvas up to date, behind everything else. */
-function syncGhosts(tx: SceneTx, scene: Scene, current: DiagramId) {
-  const fresh = ghostsFor(scene, current);
+function syncGhosts(tx: SceneTx, scene: Scene, current: DiagramId, pins?: Pins) {
+  const fresh = ghostsFor(scene, current, pins);
   const old = tx.live().filter((e) => isGhost(e.customData));
   if (!fresh.length && !old.length) return;
   const keep = new Set(fresh.map((g) => g.id));
@@ -179,6 +183,7 @@ function syncGhosts(tx: SceneTx, scene: Scene, current: DiagramId) {
   // it is locked, as ghosts once were.
   const shape = (e: El) => JSON.stringify([
     e.x, e.y, e.width, e.height, e.points, e.text, e.opacity, e.strokeColor, e.backgroundColor, e.containerId ?? null, e.boundElements?.map((b) => b.id) ?? null, !!e.locked,
+    e.startBinding?.elementId ?? null, e.endBinding?.elementId ?? null,
   ]);
   const added: El[] = [];
   for (const g of fresh) {
@@ -187,7 +192,23 @@ function syncGhosts(tx: SceneTx, scene: Scene, current: DiagramId) {
     else if (o.isDeleted || shape(o) !== shape(g)) tx.patch(g.id, { ...g, isDeleted: false });
   }
   if (added.length) tx.insert(added, 0);
+  // The boxes drawn in the layer know of the ghost relationships glued to them, for the canvas to move these along
+  // with them as they are dragged; of no others.
+  const glued = new Map<string, string[]>();
+  for (const g of fresh) {
+    for (const b of [g.startBinding, g.endBinding]) {
+      if (b && !keep.has(b.elementId)) glued.set(b.elementId, [...(glued.get(b.elementId) ?? []), g.id]);
+    }
+  }
+  for (const e of tx.live()) {
+    if (isGhost(e.customData) || (!glued.has(e.id) && !e.boundElements?.some((r) => ghostSource(r.id)))) continue;
+    const bound = [...(e.boundElements ?? []).filter((r) => !ghostSource(r.id)), ...(glued.get(e.id) ?? []).map((id) => ({ type: "arrow", id }))];
+    if (JSON.stringify(bound) !== JSON.stringify(e.boundElements ?? [])) tx.patch(e.id, { boundElements: bound });
+  }
 }
+
+/** An element without the ghost relationships glued to it, which only the layer on the canvas has. */
+const unglued = (e: El): El => (e.boundElements?.some((r) => ghostSource(r.id)) ? { ...e, boundElements: e.boundElements.filter((r) => !ghostSource(r.id)) } : e);
 
 /**
  * A change to any layer of a drawing: the current layer through the scene, the others in the store on the carrier
@@ -205,7 +226,7 @@ export class LayerTx {
     this.tx = new SceneTx(view);
     this.carrier = findCarrier(this.tx.live());
     const s = readStore(this.tx.live());
-    this.store = { current: s.current, views: { ...s.views }, theme: s.theme };
+    this.store = { current: s.current, views: { ...s.views }, theme: s.theme, pins: { ...(s.pins ?? {}) } };
     for (const [layer, els] of Object.entries(s.hidden)) this.hidden.set(layer, new Map((els as El[]).map((e) => [e.id, e])));
   }
 
@@ -225,6 +246,28 @@ export class LayerTx {
   setTheme(theme: string) {
     if (theme === this.store.theme) return;
     this.store.theme = theme;
+    this.dirty = true;
+  }
+
+  /** Where the ghosts of the layer on the canvas were moved to by hand. */
+  get pins(): Pins {
+    return this.store.pins?.[this.current] ?? {};
+  }
+
+  /** Keeps the ghost of an element where it was moved to by hand in the layer on the canvas. */
+  pin(id: string, at: Vec) {
+    this.store.pins = { ...this.store.pins, [this.current]: { ...this.pins, [id]: { x: at.x, y: at.y } } };
+    this.dirty = true;
+  }
+
+  /** Lets the ghosts of the elements, or all of them, go back to where the layer puts them. */
+  unpin(ids?: string[]) {
+    const left = ids ? Object.fromEntries(Object.entries(this.pins).filter(([id]) => !ids.includes(id))) : {};
+    if (Object.keys(left).length === Object.keys(this.pins).length) return;
+    const pins = { ...this.store.pins };
+    if (Object.keys(left).length) pins[this.current] = left;
+    else delete pins[this.current];
+    this.store.pins = pins;
     this.dirty = true;
   }
 
@@ -322,7 +365,14 @@ export class LayerTx {
   private storeValue(): C4Store {
     const hidden: Record<string, El[]> = {};
     for (const [layer, m] of this.hidden) if (layer !== this.current) hidden[layer] = [...m.values()].filter((e) => !e.isDeleted);
-    return { current: this.current, views: this.store.views, hidden, ...(this.store.theme ? { theme: this.store.theme } : {}) };
+    const pins = Object.fromEntries(Object.entries(this.store.pins ?? {}).filter(([layer, p]) => layer in this.store.views && Object.keys(p).length));
+    return {
+      current: this.current,
+      views: this.store.views,
+      hidden,
+      ...(this.store.theme ? { theme: this.store.theme } : {}),
+      ...(Object.keys(pins).length ? { pins } : {}),
+    };
   }
 
   /** The carrier with the store, at the top left of the layer on the canvas so it never widens an export. */
@@ -355,7 +405,10 @@ export class LayerTx {
   /** Applies the change to the canvas and the store. */
   commit(ea: ExcalidrawAutomate) {
     this.mark();
-    syncGhosts(this.tx, this.scene(), this.current);
+    const scene = this.scene();
+    // A ghost no more: its element is drawn in the layer now, or gone.
+    this.unpin(Object.keys(this.pins).filter((id) => !scene.element(id) || scene.boxIn(id, this.current)));
+    syncGhosts(this.tx, scene, this.current, this.pins);
     if (this.dirty) {
       const carrier = this.carrierFor(ea, this.elements(this.current));
       if (this.carrier) this.tx.patch(carrier.id, { x: carrier.x, y: carrier.y, customData: carrier.customData });
@@ -372,14 +425,14 @@ export class LayerTx {
     this.mark();
     // What was taken off the layer leaves the canvas with it, and the guard starts over on the other layer.
     if (layer !== this.current) for (const id of this.removed) removedByPlugin.delete(id);
-    const leaving = this.elements(this.current);
+    const leaving = this.elements(this.current).map(unglued);
     const arriving = this.elements(layer);
     this.hidden.set(this.current, new Map(leaving.map((e) => [e.id, e])));
     this.hidden.delete(layer);
     this.store.current = layer;
     const carrier = this.carrierFor(ea, arriving);
     const layers = new Map<DiagramId, El[]>(Object.keys(this.store.views).map((l) => [l, l === layer ? arriving : this.elements(l)]));
-    const ghosts = ghostsFor(new Scene(layers, this.store.views), layer);
+    const ghosts = ghostsFor(new Scene(layers, this.store.views), layer, this.pins);
     this.api.updateScene({
       elements: [...ghosts, ...arriving, carrier],
       appState: selectionOf([...ghosts, ...arriving], selected),

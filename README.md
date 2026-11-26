@@ -32,7 +32,7 @@ A drawing is one C4 model, and its diagrams are levels you zoom through, one on 
 
 Please note that **code** level is not supported, because you wouldn't use it anyway. :)
 
-Zooming into a system opens it in place: the boundary takes the place of its box, and the elements around keep their places. The levels above stay in view around it, dimmed, so the whole picture is never lost. Zooming in the first time creates the level, with the elements the system has relationships with. Each level edits only its own elements; what comes from the levels above is there for context and is edited there. The boundary grows and shrinks to fit what is in it.
+Zooming into a system opens it in place: the boundary takes the place of its box, and the elements around keep their places. The levels above stay in view around it, dimmed, so the whole picture is never lost. They follow the boundary when it moves; a dimmed element moved by hand stays where it is put in that level, as the level's own elements do, and none lies over another box: it moves aside to the nearest free place. The command *Reset position of moved ghosts* lets the selected ones, or all of them, follow the boundary again. Zooming in the first time creates the level, with the elements the system has relationships with. Each level edits only its own elements; what comes from the levels above is there for context and is edited there. The boundary grows and shrinks to fit what is in it.
 
 ![](docs/c4-2.png)
 
@@ -44,19 +44,23 @@ Containers have a **type**, picked in their form, that gives their shape: **gene
 
 Every element and relationship can also have **metadata**, key: value pairs added in its form. They are not drawn. An element drawn on several levels is one element: edit it on one and it changes on all of them.
 
+### 📝 Notes
+
+Every element and relationship can have a **note**, written in its form in Markdown: decisions, open questions, anything that does not belong in its description. A note is not drawn: a small mark at the top right corner of a box, or on a relationship's label, shows there is one. Click the mark and the note opens as a sticky note next to it, its links opening what they point to; it follows it as the view scrolls and zooms, and closes with another click on the mark, a click anywhere else, or Escape. The marks are laid over the canvas, not drawn on it, so exported images never show them. Like metadata, a note is the same on every level the element is drawn on, and edits of a relationship's note go down to its copies on the levels below. The notes of the levels above have their marks around a level too: on the dimmed elements and relationships, such as external systems, and on the boundaries of the system or container the level shows the inside of and of those around it; turn **Show notes of the levels above** off in the settings to leave them out.
+
 ### ➡️ Relationships across levels
 
-A relationship goes from the element selected first to the other one, which can also be a dimmed element of a level above: it is drawn in the level then, where it was; its form, the edit form and a command can reverse it. Two elements can have any number of relationships, either way; they lie side by side and stay apart when a box moves.
+A relationship goes from the element selected first to the other one, which can also be a dimmed element of a level above: it is drawn in the level then, where it was. One between two elements of the levels above belongs to their level: it is added there, and shows dimmed. Its form, the edit form and a command can reverse it. Two elements can have any number of relationships, either way; they lie side by side and stay apart when a box moves.
 
 A relationship drawn on one level also appears on the levels above, between the elements containing its ends: `Customer → Web shop` in the containers of the Bookshop puts `Customer → Bookshop` in the system context, unless the two already have a relationship there, either way. Going down, the relationships of a system come into its level as arrows to its boundary, to be moved onto the containers they are about. Editing a relationship edits its copies on the levels below; the levels above keep what they say. Deleting the last relationship between two elements deletes every relationship below between them and anything inside them, either way.
 
 ### 🗂️ Groups
 
-A **group** is a dotted box with a name around elements that belong together, such as the containers of a microservice. Add one with Ctrl+G or from the panel. Groups nest, fit what is in them, and are shown only on their own level. Drag an element into or out of a group to change it; drag a group and what is in it comes along. Deleting a group leaves its elements.
+A **group** is a dotted box with a name around elements that belong together, such as the containers of a microservice. Add one with Ctrl+G or from the panel. Groups nest, fit what is in them, and are shown only on their own level. Drag an element into or out of a group to change it; drag a group by its outline or name and what is in it moves along as you drag, while resizing it leaves what is in it as it is. Deleting a group leaves its elements.
 
 ### 🧭 Moving elements between parents
 
-Drag a system's boundary and its containers and label come along. Drag a container out of its system's boundary and it is marked with a thick red dashed outline until it is back, as is anything dropped into a boundary it does not belong in. Drop a container onto another internal system, or a component onto another container, and it moves there, with its relationships.
+Drag a system's boundary by its outline or name and its containers, groups and label move along as you drag; resizing it leaves them where they are, and it fits back around them once let go. Drag a container out of its system's boundary and it is marked with a thick red dashed outline until it is back, as is anything dropped into a boundary it does not belong in. Drop a container onto another internal system, or a component onto another container, and it moves there, with its relationships.
 
 ### ⌨️ Keyboard-first editing
 
@@ -102,6 +106,7 @@ All options are in **Settings → Excalidraw C4 Model**.
 | Panel position | Right | A row at the bottom or top of the drawing, or a column on its left or right side. On phones, where Excalidraw's own toolbars take the bottom, Bottom shows it at the top. |
 | Ask what a new drawing is for | Off | On a drawing without C4 elements that is not yet anybody's, offers C4 diagrams or plain Excalidraw instead of taking it over. With another plugin drawing its own kind of diagram enabled, the plugins always ask. |
 | Theme of new drawings | Classic | The colors of new drawings: a built-in theme or one of your own. Each drawing keeps its own. |
+| Show notes of the levels above | On | The marks of the notes of the levels above around a level: on the dimmed elements and relationships, such as external systems, and on the boundaries of the systems and containers around it. |
 
 **Themes** are on their own page in the settings. Add a theme starting from a built-in one or one of yours, reorder them, and rename or delete one from its page. Each theme has an outline, a fill and a text color for every type of element (groups have no fill), and **Reset colors to defaults** restores the Classic ones. Export all your themes as JSON, to the clipboard or a file in the vault, and import them in another vault, from the clipboard or a file. A drawing whose theme was deleted gets the Classic colors.
 

@@ -1,23 +1,24 @@
 import { ItemView, Notice, Plugin } from "obsidian";
 import {
   Selected, SelectedGroup, SelectedItem, SelectedRelationship, addElement, addGroup, addRelationship, canAdd, canEdit, canRelate, deleteBelow, diagramInfo, dissolveGroups, dropBoxes, hasKind, isElement,
-  isGroup, isRelationship, ghostAt, itemAt, itemOf, moveBoundary, redrawResized, regroup, restoreBoundary, reverseRelationship, onlyC4Selected, refreshLooks, setDrawingTheme, themeOfDrawing, useDrawingColors, selectNext, selectedElements, selectedEnds,
+  dragCarry, isGroup, isRelationship, hasPinnedGhosts, pinGhosts, resetGhosts, noteMarks, ghostAt, itemAt, itemOf, moveBoundary, redrawResized, regroup, restoreBoundary, reverseRelationship, onlyC4Selected, refreshLooks, setDrawingTheme, themeOfDrawing, useDrawingColors, selectNext, selectedElements, selectedEnds,
   selectedItem, selectionShapes, updateElement, updateGroup, updateRelationship, zoomIn, zoomOut,
 } from "./actions";
 import { Guard, guardLevels, protectStore, refreshCanvas, selectionOf } from "./layertx";
 import { AppState, El, ExcalidrawAPI, ExcalidrawView, VIEW_TYPE_EXCALIDRAW, isExcalidrawView } from "./excalidraw";
 import {
   Box, C4Element, C4Group, C4Kind, C4Relationship, ContainerType, GROUP_LOOK_PARTS, KEY, KINDS, Look, boundaryData, canBeExternal, elementData, groupData, groupLookOf,
-  hasTechnology, iconOf, isContainerType, kindTitle, levelOf, lookOf, ownGroupLook, ownLook, zoomView,
+  cleanNote, hasTechnology, iconOf, isContainerType, isGhost, kindTitle, levelOf, lookOf, ownGroupLook, ownLook, zoomView,
 } from "./model";
 import { setNewDrawingTheme, setUserThemes } from "./themes";
 import { C4Panel } from "./panel";
 import { MODE, MODE_KEY, Owner, isAlone, ownerOf, register } from "./mode";
 import { PLAIN, offer, withdraw } from "./chooser";
-import { Highlight } from "./highlight";
+import { Highlight, markBox } from "./highlight";
+import { NoteCard } from "./note";
 import { ShortcutAction, actionOf, isMove, shortcutOf } from "./keys";
 import { C4SettingTab, DEFAULT_SETTINGS, Settings, SettingsHost, loadSettings } from "./settings";
-import { Field, FormModal, Verb, elementFields, externalToggle, iconPicker, lookPickers, reverseButton, submitText, typeToggle } from "./forms";
+import { Field, FormModal, Verb, elementFields, noteField, externalToggle, iconPicker, lookPickers, reverseButton, submitText, typeToggle } from "./forms";
 import { ThemeModal, showThemeMenu } from "./themeui";
 
 const NO_EXCALIDRAW = "The Excalidraw plugin's scripting API is not available.";
@@ -35,6 +36,9 @@ interface ViewState {
   api: ExcalidrawAPI;
   panel: C4Panel;
   highlight: Highlight;
+  note: NoteCard; // the note opened from its mark
+  openNote?: string; // the box or arrow whose note is open
+  carry?: string; // the group or boundary being dragged with what is in it selected along, until it is dropped
   unsubscribe?: () => void;
   raf: number;
   highlightRaf: number;
@@ -150,6 +154,11 @@ export default class ExcalidrawC4Plugin extends Plugin implements SettingsHost {
       checkCallback: (checking) => this.withView(checking, (view) => this.reverse(view), (view) => !!selectedRelationship(view)),
     });
     this.addCommand({
+      id: "reset-ghosts",
+      name: "Reset position of moved ghosts (the selected ones, or all)",
+      checkCallback: (checking) => this.withView(checking, (view) => reportIfFailed(resetGhosts(view)), hasPinnedGhosts),
+    });
+    this.addCommand({
       id: "zoom-in",
       name: "Zoom into the selected system or container",
       checkCallback: (checking) => this.withView(checking, (view) => this.zoomIn(view), (view) => diagramInfo(view).zoomIn),
@@ -253,6 +262,12 @@ export default class ExcalidrawC4Plugin extends Plugin implements SettingsHost {
 
   /** Runs the shortcut of a key pressed on a drawing, instead of what Excalidraw would do with the key. */
   private onKey(e: KeyboardEvent) {
+    // Escape closes the note open on the drawing, and goes on to Excalidraw.
+    if (e.key === "Escape") {
+      const view = this.activeView();
+      const s = view && this.states.get(view);
+      if (s) this.closeNote(s);
+    }
     if (this.paused || e.isComposing || e.repeat) return;
     const view = this.editedView();
     const target = e.target instanceof HTMLElement ? e.target : null;
@@ -350,8 +365,32 @@ export default class ExcalidrawC4Plugin extends Plugin implements SettingsHost {
     if (!(e.target instanceof Node)) return;
     for (const s of this.states.values()) {
       if (!s.view.contentEl.contains(e.target)) continue;
+      // A note open closes with a click anywhere else on the drawing than on it or on the marks.
+      const at = e.target.instanceOf(Element) ? e.target : e.target.parentElement;
+      if (!at?.closest(".c4-note, .c4-note-mark")) this.closeNote(s);
       s.drag = new Map(tracked(s.api.getSceneElements()).map((b) => [b.id, { x: b.x, y: b.y, width: b.width, height: b.height }]));
+      this.carryAlong(s, e);
     }
+  }
+
+  /**
+   * On a press on a group or the boundary of the layer, selects what is in it along with it, before Excalidraw handles
+   * the press: the canvas then drags it all together. The selection goes back to the group or boundary alone once it
+   * is dropped.
+   */
+  private carryAlong(s: ViewState, e: PointerEvent) {
+    s.carry = undefined;
+    if (this.paused || e.button !== 0 || e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (!(e.target instanceof HTMLCanvasElement) || this.editedView() !== s.view) return;
+    // Over a handle resizing or rotating what is selected, as the canvas shows by its cursor: that alone.
+    if (/resize|grab/.test(e.target.style.cursor)) return;
+    const state = s.api.getAppState();
+    const zoom = state.zoom?.value ?? 1;
+    const at = { x: (e.clientX - (state.offsetLeft ?? 0)) / zoom - state.scrollX, y: (e.clientY - (state.offsetTop ?? 0)) / zoom - state.scrollY };
+    const ids = dragCarry(s.view, at);
+    if (!ids) return;
+    s.carry = ids[0];
+    s.api.updateScene({ appState: selectionOf(s.api.getSceneElements(), ids), captureUpdate: "NEVER" });
   }
 
   private onPointerUp() {
@@ -370,6 +409,8 @@ export default class ExcalidrawC4Plugin extends Plugin implements SettingsHost {
   }
 
   private afterDrag(s: ViewState, before: Map<string, Box>) {
+    const carried = s.carry;
+    s.carry = undefined;
     if (!this.states.has(s.view) || s.api.getAppState().viewModeEnabled) return;
     const off = (a: number, c: number) => Math.abs(a - c) > 0.5;
     const els = draggables(s.api.getSceneElements());
@@ -377,6 +418,12 @@ export default class ExcalidrawC4Plugin extends Plugin implements SettingsHost {
       const was = before.get(b.id);
       return !!was && (off(was.width, b.width) || off(was.height, b.height));
     };
+    // Ghosts moved stay where they were moved to, before anything else is fitted around them.
+    const ghosts = s.api.getSceneElements().filter(movableGhost).flatMap((g) => {
+      const was = before.get(g.id);
+      return was && !resized(g) && (off(was.x, g.x) || off(was.y, g.y)) ? [{ id: g.id, dx: g.x - was.x, dy: g.y - was.y }] : [];
+    });
+    if (ghosts.length) pinGhosts(s.view, ghosts, before);
     const selected = s.api.getAppState().selectedElementIds ?? {};
     const moved = els.flatMap((b) => {
       const was = before.get(b.id);
@@ -400,6 +447,7 @@ export default class ExcalidrawC4Plugin extends Plugin implements SettingsHost {
     for (const b of tracked(s.api.getSceneElements())) if (boundaryData(b.customData) && resized(b)) restoreBoundary(s.view, b.id, before.get(b.id)!);
     for (const message of messages) new Notice(message);
     if (messages.length) this.refreshPanel(s);
+    if (carried) s.api.updateScene({ appState: selectionOf(s.api.getSceneElements(), [carried]), captureUpdate: "NEVER" });
     this.checkCanvas(s);
   }
 
@@ -462,7 +510,7 @@ export default class ExcalidrawC4Plugin extends Plugin implements SettingsHost {
 
   async saveSettings() {
     await this.saveData(this.settings);
-    for (const s of this.states.values()) this.refreshPanel(s);
+    for (const s of this.states.values()) this.refresh(s);
   }
 
   private looksTimer = 0;
@@ -511,6 +559,7 @@ export default class ExcalidrawC4Plugin extends Plugin implements SettingsHost {
     if (existing?.api === api) {
       existing.panel.mount(view.contentEl);
       existing.highlight.mount(view.contentEl);
+      existing.note.mount(view.contentEl);
       this.refreshPanel(existing);
       return;
     }
@@ -526,10 +575,12 @@ export default class ExcalidrawC4Plugin extends Plugin implements SettingsHost {
       theme: (at) => this.themeMenu(view, at),
       togglePause: () => this.togglePause(),
     });
-    const highlight = new Highlight();
-    const s: ViewState = { view, api, panel, highlight, raf: 0, highlightRaf: 0, canvasRaf: 0, selection: null, viewMode: undefined, revision: NaN };
+    const highlight = new Highlight((id) => this.toggleNote(view, id));
+    const note = new NoteCard(this.app);
+    const s: ViewState = { view, api, panel, highlight, note, raf: 0, highlightRaf: 0, canvasRaf: 0, selection: null, viewMode: undefined, revision: NaN };
     panel.mount(view.contentEl);
     highlight.mount(view.contentEl);
+    note.mount(view.contentEl);
     s.unsubscribe = api.onChange?.((els, appState) => this.onSceneChange(s, els, appState));
     this.states.set(view, s);
     // Drawn in the colors of the types of element now, which may have changed since the drawing was last open.
@@ -546,6 +597,7 @@ export default class ExcalidrawC4Plugin extends Plugin implements SettingsHost {
     if (s.canvasRaf) window.cancelAnimationFrame(s.canvasRaf);
     s.panel.destroy();
     s.highlight.destroy();
+    s.note.destroy();
   }
 
   /**
@@ -560,7 +612,8 @@ export default class ExcalidrawC4Plugin extends Plugin implements SettingsHost {
         if (this.states.get(s.view) === s) this.checkCanvas(s);
       });
     }
-    // The highlight follows the selection, its elements, and the view as it scrolls and zooms.
+    // The highlight, the marks of notes and the note of the selection follow the selection, the elements, and the view
+    // as it scrolls and zooms.
     if (!s.highlightRaf) {
       s.highlightRaf = window.requestAnimationFrame(() => {
         s.highlightRaf = 0;
@@ -587,7 +640,28 @@ export default class ExcalidrawC4Plugin extends Plugin implements SettingsHost {
   private refreshHighlight(s: ViewState) {
     const state = s.api.getAppState();
     const off = state.viewModeEnabled || this.paused || !this.isMine(s.view);
-    s.highlight.update(off ? [] : selectionShapes(s.view), state, s.view.contentEl);
+    const marks = off ? [] : noteMarks(s.view, this.settings.parentNotes);
+    // The note open, while its element or relationship is on the canvas and has one.
+    const open = marks.find((m) => m.id === s.openNote);
+    if (!open) s.openNote = undefined;
+    // What a boundary being dragged takes along is selected only for the canvas to move it: not outlined.
+    s.highlight.update(off || s.carry ? [] : selectionShapes(s.view), marks, s.openNote, state, s.view.contentEl);
+    s.note.show(open ? { note: open.note, path: s.view.file?.path ?? "" } : null, open ? markBox(open.shape, state, s.view.contentEl) : null);
+  }
+
+  /** Opens the note of a box or arrow next to it, or closes it when it is open. */
+  private toggleNote(view: ExcalidrawView, id: string) {
+    const s = this.states.get(view);
+    if (!s) return;
+    s.openNote = s.openNote === id ? undefined : id;
+    this.refreshHighlight(s);
+  }
+
+  /** Closes the note open on a drawing, if any. */
+  private closeNote(s: ViewState) {
+    if (!s.openNote) return;
+    s.openNote = undefined;
+    this.refreshHighlight(s);
   }
 
   private refreshPanel(s: ViewState) {
@@ -709,7 +783,7 @@ export default class ExcalidrawC4Plugin extends Plugin implements SettingsHost {
     let type: ContainerType = isContainerType(data.type) ? data.type : "generic";
     let icon = data.icon;
     const heading = () => `${verb} ${kindTitle(data.kind, external).toLowerCase()}`;
-    const values = { name: data.name, technology: data.technology ?? "", description: data.description ?? "" };
+    const values = { name: data.name, technology: data.technology ?? "", description: data.description ?? "", note: data.note ?? "" };
     const fields = elementFields(data.kind, external).map((f) => ({ ...f, value: values[f.key as keyof typeof values] }));
     let look: Partial<Look> = { ...data.look };
     const typed = () => ({ kind: data.kind, ...(data.kind === "container" ? { type } : {}), external });
@@ -717,8 +791,10 @@ export default class ExcalidrawC4Plugin extends Plugin implements SettingsHost {
       const technology = hasTechnology(data.kind) ? v.technology : undefined;
       useDrawingColors(view); // for its own colors, those that differ from its type's in the drawing's theme
       const element: C4Element = {
-        ...data, ...typed(), icon, name: v.name ?? "", technology, description: v.description, metadata: modal.metadata, look: ownLook(typed(), look),
+        ...data, ...typed(), icon, name: v.name ?? "", technology, description: v.description, note: cleanNote(v.note), metadata: modal.metadata,
+        look: ownLook(typed(), look),
       };
+      if (!element.note) delete element.note;
       // Only a custom container has an icon.
       if (!iconOf(element)) delete element.icon;
       reportIfFailed(save(element));
@@ -788,11 +864,12 @@ export default class ExcalidrawC4Plugin extends Plugin implements SettingsHost {
     const fields: Field[] = [
       { key: "description", name: "Description", value: data.description },
       { key: "technology", name: "Technology", value: data.technology ?? "", placeholder: "E.g. JSON/HTTPS" },
+      { ...noteField, value: data.note ?? "" },
     ];
     let reversed = false;
     const title = () => (reversed ? [...ends].reverse() : ends).join(" → ");
     const modal = new FormModal(this.app, title(), fields, (v) => {
-      reportIfFailed(save({ ...data, description: v.description ?? "", technology: v.technology, metadata: modal.metadata }, reversed));
+      reportIfFailed(save({ ...data, description: v.description ?? "", technology: v.technology, note: cleanNote(v.note), metadata: modal.metadata }, reversed));
     }, submitText(verb));
     modal.headerButton = reverseButton(() => {
       reversed = !reversed;
@@ -807,7 +884,14 @@ export default class ExcalidrawC4Plugin extends Plugin implements SettingsHost {
 const hasC4 = (els: readonly El[]): boolean => els.some((e) => !e.isDeleted && !!e.customData?.[KEY]);
 
 /** What is watched while the pointer is down: what can be dragged and dropped, and the boundary, which can be resized. */
-const tracked = (els: readonly El[]): El[] => [...draggables(els), ...els.filter((e) => !e.isDeleted && e.type !== "text" && boundaryData(e.customData))];
+const tracked = (els: readonly El[]): El[] => [
+  ...draggables(els),
+  ...els.filter((e) => !e.isDeleted && e.type !== "text" && boundaryData(e.customData)),
+  ...els.filter(movableGhost),
+];
+
+/** A ghost that can be moved: of a box or a part of its shape, not of a relationship or its text. */
+const movableGhost = (e: El): boolean => !e.isDeleted && !e.containerId && e.type !== "arrow" && e.type !== "text" && isGhost(e.customData);
 
 /** What can be dragged and dropped in a drawing: the C4 boxes and the boxes of groups. */
 const draggables = (els: readonly El[]): El[] => els.filter((e) => !e.containerId && !e.isDeleted && (elementData(e.customData) || groupData(e.customData)));
